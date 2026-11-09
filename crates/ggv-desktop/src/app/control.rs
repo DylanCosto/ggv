@@ -1460,6 +1460,78 @@ mod tests {
         assert!((moved(&app) - 100.0).abs() < 0.5, "where they were: {}", moved(&app));
     }
 
+    /// A drag on the ruler or reference row highlights a region and zooms to exactly it on
+    /// release, in either direction; a slip does nothing, and a drag on the tracks still pans.
+    #[test]
+    fn dragging_on_the_reference_zooms_to_what_it_marks() {
+        if !data_dir().join("HG002.revio.slices.bam").exists() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        let mut app = gnas_with_reads(&ctx, &[]);
+        let rect = window(800.0);
+        app.width = rect.width();
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let raw = egui::RawInput { events, screen_rect: Some(rect), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                let layout = app.arrange(rect);
+                app.handle_input(ui, &response, rect, &layout);
+            });
+            out.textures_delta.clear();
+        };
+        let drag = |app: &mut App, y: f32, xs: &[f32]| {
+            let at = |x: f32| egui::pos2(x, y);
+            let button = |x: f32, pressed| egui::Event::PointerButton { pos: at(x), button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+            let (first, last) = (xs[0], xs[xs.len() - 1]);
+            frame(app, vec![egui::Event::PointerMoved(at(first))]);
+            frame(app, vec![button(first, true)]);
+            for x in &xs[1..] {
+                frame(app, vec![egui::Event::PointerMoved(at(*x))]);
+            }
+            frame(app, vec![button(last, false)]);
+            frame(app, vec![]);
+        };
+        let on_reference = super::super::REF_TOP + 2.0;
+        let start = |app: &mut App| {
+            app.attach_goto("chr20:58900000-58910000").unwrap();
+            let (vs, _) = app.visible();
+            (vs, app.ppb, app.center)
+        };
+
+        let (vs, ppb, center) = start(&mut app);
+        let base = |x: f32| (vs + f64::from(x) / ppb).floor();
+        for xs in [[200.0, 450.0, 700.0], [700.0, 450.0, 200.0]] {
+            start(&mut app);
+            drag(&mut app, on_reference, &xs);
+            let (a, b) = app.visible();
+            assert!((a - base(200.0)).abs() < 1.0 && (b - (base(700.0) + 1.0)).abs() < 1.0, "{xs:?}: {a}-{b}");
+            assert!(app.zoom_drag.is_none());
+        }
+
+        // Highlighted while dragging, with the view still where it was.
+        start(&mut app);
+        let at = egui::pos2(200.0, on_reference);
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }]);
+        frame(&mut app, vec![egui::Event::PointerMoved(egui::pos2(300.0, on_reference))]);
+        frame(&mut app, vec![egui::Event::PointerMoved(egui::pos2(400.0, on_reference))]);
+        assert_eq!(app.zoom_drag, Some((base(200.0) as u64, base(400.0) as u64)));
+        assert_eq!((app.ppb, app.center), (ppb, center), "no pan or zoom until release");
+        let up = egui::pos2(400.0, on_reference);
+        frame(&mut app, vec![egui::Event::PointerButton { pos: up, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+
+        start(&mut app);
+        drag(&mut app, on_reference, &[200.0, 215.0, 201.0]);
+        assert_eq!((app.ppb, app.center), (ppb, center), "a slip");
+
+        start(&mut app);
+        let on_tracks = super::super::TRACKS_TOP + 200.0;
+        drag(&mut app, on_tracks, &[200.0, 300.0, 400.0]);
+        assert_eq!(app.ppb, ppb, "tracks don't zoom");
+        assert!(app.center < center, "they pan");
+    }
+
     /// In a small window, the alignment track (its reads scroll) gives way first; the small
     /// tracks keep their header and a whole row; only when even that doesn't fit does the stack
     /// scroll, and scrolled to the end, room left below the last tracks goes to the reads.

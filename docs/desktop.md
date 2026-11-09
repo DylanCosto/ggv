@@ -268,9 +268,9 @@ every shortcut:
 |---|---|
 | Anything | Ctrl+K, type a few letters |
 | Go to a locus | Type in the locus box (Ctrl+L): `chr17`, `chr17:41,244,435` (a base, outlined) or `chr17:41,240,000-41,250,000` |
-| Zoom | Mouse wheel (around the pointer; over rows that don't all fit, the wheel scrolls them and Ctrl+wheel zooms), `+`/`−`, double-click to zoom in (on a gene: fit the gene) |
+| Zoom | Mouse wheel (around the pointer; over rows that don't all fit, the wheel scrolls them and Ctrl+wheel zooms), `+`/`−`, double-click to zoom in (on a gene: fit the gene), or drag across the ruler or reference row to zoom to exactly what you mark |
 | Step through variants | **< Variant** / **Variant >**, Ctrl+B / Ctrl+F |
-| Pan | Drag (horizontal: genome; vertical: read rows), arrow keys, trackpad sideways scroll |
+| Pan | Drag on the tracks (horizontal: genome; vertical: read rows), arrow keys, trackpad sideways scroll |
 | Scroll rows | Drag up/down in a track, or `↑`/`↓`, PageUp/PageDown over it |
 | Arrange tracks | Drag a track's header bar to move it (a blue line shows where it lands); drag the edge between two tracks to give one's height to the other, or into the room below the last track to move the track under it (the tracks further away stay put; a height you set is kept when zooming out hides the reads; the last track's bottom edge stops at the window's bottom), double-click an edge for the automatic height. Heights saved on a bigger screen shrink to fit. Saved with the session |
 | Inspect | Hover a read (name, span, strand, MAPQ, flags, mismatches, the base under the pointer) or a coverage column (depth and allele counts) |

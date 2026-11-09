@@ -98,6 +98,8 @@ const SPAN_SLACK: u64 = 2;
 const RULER_H: f32 = 30.0;
 const REF_TOP: f32 = 32.0;
 const TRACKS_TOP: f32 = REF_TOP + REF_H + 4.0;
+/// A drag on the ruler or reference row marking less than this many points is taken for a slip.
+const MIN_ZOOM_DRAG: f64 = 4.0;
 /// Tracks split the remaining height evenly, but never get shorter than this.
 const MIN_SECTION_H: f32 = 120.0;
 
@@ -223,6 +225,9 @@ pub struct App {
     /// A shift-dragged region: contig index, 0-based start and end; and whether still dragging.
     selection: Option<(usize, u64, u64)>,
     selecting: bool,
+    /// A drag on the ruler or reference row in progress: the base it started on and the base
+    /// under the pointer. Zooms to what it marks on release.
+    zoom_drag: Option<(u64, u64)>,
     /// A sort requested on the command line, applied at the first outlined base.
     pending_sort: Option<ggv_layout::SortBy>,
     /// An outlined base from a session, applied once the genome is known.
@@ -465,6 +470,7 @@ impl App {
             variant_popup: None,
             selection: None,
             selecting: false,
+            zoom_drag: None,
             pending_sort: args.sort,
             pending_highlight: args.highlight.clone(),
             cycle_start: None,
@@ -625,6 +631,7 @@ impl App {
         // same index is another contig.
         self.selection = None;
         self.selecting = false;
+        self.zoom_drag = None;
         self.measure = None;
         self.measuring = false;
         self.selected_read = None;
@@ -1774,6 +1781,21 @@ impl App {
                 self.clamp_view();
             }
         }
+    }
+
+    /// Fits the view to the bases from `a` to `b`, given in either order, unless so little is
+    /// marked that it was a slip.
+    fn zoom_to_marked(&mut self, a: u64, b: u64) {
+        let len = self.contig_len() as u64;
+        let (start, last) = (a.min(b).min(len), a.max(b).min(len));
+        if (last - start) as f64 * self.ppb < MIN_ZOOM_DRAG {
+            return;
+        }
+        let end = (last + 1).min(len);
+        self.remember_place();
+        self.center = (start + end) as f64 / 2.0;
+        self.ppb = f64::from(self.width) / (end - start) as f64;
+        self.clamp_view();
     }
 
     fn zoom_at(&mut self, factor: f64, x_in_canvas: f32) {
@@ -3429,6 +3451,27 @@ impl App {
             }
             return;
         }
+        // A plain drag from the ruler or reference row marks a region to zoom to instead of
+        // panning. (Where the button went down: the drag is reported a few points later.)
+        if response.drag_started()
+            && let Some(p) = ui.input(|i| i.pointer.press_origin())
+            && p.y < rect.top() + TRACKS_TOP
+        {
+            let b = base_at(p, self);
+            self.zoom_drag = Some((b, b));
+        }
+        if let Some((from, _)) = self.zoom_drag {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            if let Some(p) = response.interact_pointer_pos() {
+                let to = base_at(Pos2::new(p.x.clamp(rect.left(), rect.right()), p.y), self);
+                self.zoom_drag = Some((from, to));
+            }
+            if response.drag_stopped() {
+                let marked = self.zoom_drag.take().unwrap_or((from, from));
+                self.zoom_to_marked(marked.0, marked.1);
+            }
+            return;
+        }
         if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {
@@ -3655,8 +3698,8 @@ impl App {
             }
         }
 
-        // A shift-dragged selection, across every track.
-        if let Some((c, a, b)) = self.selection
+        // A shift-dragged selection, or the region being marked to zoom to, across every track.
+        if let Some((c, a, b)) = self.zoom_drag.map(|(a, b)| (self.contig, a.min(b), a.max(b) + 1)).or(self.selection)
             && c == self.contig
         {
             let x0 = self.x_of(rect, vs, a as f64).max(rect.left());
