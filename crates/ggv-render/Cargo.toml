@@ -1,0 +1,18 @@
+[package]
+name = "ggv-render"
+description = "Draws GGV views: a backend-neutral scene, rasterized to PNG or written as SVG"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ggv-layout.workspace = true
+ggv-model.workspace = true
+tiny-skia = "0.12"
+
+[dev-dependencies]
+ggv-io.workspace = true
+
+[lints]
+workspace = true

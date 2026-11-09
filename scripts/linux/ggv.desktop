@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GGV
+GenericName=Genome Viewer
+Comment=Fast alignment, variant and annotation viewer
+Exec=ggv-desktop %U
+Terminal=false
+Categories=Science;Biology;
+MimeType=application/x-bam;application/x-cram;text/x-vcf;application/x-bcf;text/x-gtf;text/x-gff3;text/x-bed;x-scheme-handler/ggv;

@@ -1,0 +1,34 @@
+[workspace]
+members = ["crates/ggv-model", "crates/ggv-io", "crates/ggv-query", "crates/ggv-annot", "crates/ggv-layout", "crates/ggv-render", "crates/ggv-cli", "crates/ggv-desktop"]
+exclude = ["vendor"]
+resolver = "3"
+
+[workspace.package]
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.91.0"
+license = "MIT"
+
+[workspace.dependencies]
+ggv-model = { path = "crates/ggv-model" }
+ggv-io = { path = "crates/ggv-io" }
+ggv-query = { path = "crates/ggv-query" }
+ggv-annot = { path = "crates/ggv-annot" }
+ggv-layout = { path = "crates/ggv-layout" }
+ggv-render = { path = "crates/ggv-render" }
+
+# pasta 0.2.0 (public; not on crates.io, where the name belongs to another crate).
+pasta = { git = "https://github.com/DylanCosto/pasta", rev = "3b67f2af99df1caaeb1962e4708d2b3b238f246b", version = "0.9.0" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"

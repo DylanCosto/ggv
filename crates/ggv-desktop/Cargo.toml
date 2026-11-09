@@ -1,0 +1,42 @@
+[package]
+name = "ggv-desktop"
+description = "GGV desktop app: GPU-instanced alignment viewer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Stamps the commit and target into the binary (--version, About, bug reports).
+build = "../../scripts/build_identity.rs"
+
+[[bin]]
+name = "ggv-desktop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+clap.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "wgpu", "x11", "wayland"] }
+ggv-annot.workspace = true
+ggv-io.workspace = true
+ggv-layout.workspace = true
+ggv-model.workspace = true
+ggv-query.workspace = true
+ggv-render.workspace = true
+# Returns freed memory to the system (the default macOS allocator keeps it), see main.rs.
+mimalloc = "0.1"
+rfd = "0.17"
+serde.workspace = true
+serde_json.workspace = true
+tiny-skia = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+# Re-attaching to the launching terminal's console (see main.rs).
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
+[lints.rust]
+# The workspace forbids unsafe code; here it is denied, with one audited exception (the
+# Windows console attach in main.rs).
+unsafe_code = "deny"
+

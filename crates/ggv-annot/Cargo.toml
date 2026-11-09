@@ -1,0 +1,19 @@
+[package]
+name = "ggv-annot"
+description = "Gene annotations for GGV: GTF, GFF3 and BED (plain or gzipped) with interval and name indexes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+ggv-model.workspace = true
+memchr = "2"
+thiserror.workspace = true
+
+[dev-dependencies]
+ggv-io.workspace = true
+
+[lints]
+workspace = true

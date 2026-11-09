@@ -1,0 +1,5 @@
+/target
+/vendor
+/dist
+# Local clinical sample reports: never commit.
+/reports

@@ -1,0 +1,164 @@
+name: Release
+
+# Pushing a tag such as v0.9.0 builds GGV for Windows, Linux and macOS, checks each package runs,
+# and publishes them with SHA256SUMS on that tag's GitHub release (created if missing). A tag with
+# a pre-release suffix (v0.9.0-rc.1, v1.0.0-beta) makes a GitHub pre-release; a plain vX.Y.Z a
+# normal release. Run by hand, it builds the same packages as workflow artifacts only.
+#
+# macOS signing is optional: with the secrets MACOS_CERTIFICATE (a base64 Developer ID
+# Application .p12), MACOS_CERTIFICATE_PASSWORD and MACOS_SIGN_IDENTITY the app is signed, and
+# with APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD too it is notarized. Without them it is
+# ad-hoc signed.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Allow long paths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and pack
+        shell: pwsh
+        run: scripts/windows/package.ps1
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $dir = Get-ChildItem dist -Directory | Where-Object Name -like 'ggv-*-windows-x64' | Select-Object -First 1
+          & "$($dir.FullName)\ggv.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "ggv --version failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggv-windows-x64
+          path: dist/*.zip
+
+  linux:
+    name: Linux (x86_64)
+    # The oldest supported Ubuntu: the binaries need its glibc (2.35) or newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev
+      - name: Build and pack
+        run: sh scripts/linux/package.sh
+      - name: Smoke test
+        run: |
+          dir=$(ls -d dist/ggv-*-linux-x86_64)
+          "$dir/ggv" --version
+          # The installer works from the unpacked download, and uninstalls.
+          HOME=$(mktemp -d) sh -c "\"$dir/install.sh\" && \"$dir/install.sh\" --uninstall"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggv-linux-x86_64
+          path: dist/*.tar.gz
+
+  macos:
+    name: macOS (universal)
+    runs-on: macos-latest
+    env:
+      # At job level so a step's `if` can see whether signing is set up.
+      HAS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        if: env.HAS_CERTIFICATE == 'true'
+        run: |
+          keychain="$RUNNER_TEMP/ggv.keychain-db"
+          pass=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+      - name: Build, sign and pack
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: scripts/macos/package.sh
+      - name: Smoke test
+        run: |
+          ggv=$(ls -d dist/ggv-*-macos-universal)/ggv
+          $ggv --version
+          lipo -archs "$ggv" | grep -q arm64
+          lipo -archs "$ggv" | grep -q x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggv-macos-universal
+          path: dist/*.zip
+
+  publish:
+    name: Checksums and release
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/data/hg002-revio
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum ggv-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggv-release
+          path: dist/*
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          # v1.2.3-rc.1, v1.2.3-beta...: a pre-release; v1.2.3: a normal release.
+          prerelease=""
+          case "$tag" in *-*) prerelease="--prerelease" ;; esac
+          gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" $prerelease --title "GGV $tag" --notes "GGV $tag for Windows (x64), Linux (x86_64, glibc 2.35+) and macOS 11+ (Apple silicon and Intel). Install steps are in the README; verify downloads with SHA256SUMS."
+          gh release upload "$tag" dist/* --clobber
+      - name: Demo data
+        # The app's "Open the demo" downloads these from the demo-v1 release (ggv_io::demo).
+        # Published once; later tags leave it as it is.
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view demo-v1 > /dev/null 2>&1; then
+            cd tests/data/hg002-revio
+            gh release create demo-v1 --prerelease --title "Demo data (HG002 long reads)"               --notes "Files for the GGV demo (Open the demo in the app, or ggv demo): two slices of public PacBio Revio HiFi data for GIAB HG002 on GRCh38 chr20. See tests/data/hg002-revio/README.md for their sources."               HG002.revio.slices.bam HG002.revio.slices.bam.bai               HG002.revio.deepvariant.phased.vcf.gz HG002.revio.deepvariant.phased.vcf.gz.tbi               HG002.revio.pbsv.vcf.gz HG002.revio.pbsv.vcf.gz.tbi               GRCh38.chr20.slices.fa.gz GRCh38.chr20.slices.fa.gz.fai GRCh38.chr20.slices.fa.gz.gzi               ncbiRefSeq.slices.gtf
+          fi

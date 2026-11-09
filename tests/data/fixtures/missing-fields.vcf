@@ -1,0 +1,8 @@
+##fileformat=VCFv4.2
+##contig=<ID=chrQA,length=1000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Quality">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allele depths">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	MISSING	PARTIAL
+chrQA	150	missing_values	G	A	.	PASS	.	GT:DP:GQ:AD	./.:.:.:.	0/1:.:.:5,.

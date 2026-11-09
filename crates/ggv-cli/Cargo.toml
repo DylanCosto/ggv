@@ -1,0 +1,28 @@
+[package]
+name = "ggv-cli"
+description = "ggv: query, render and review alignments from the command line, and serve them to AI agents (MCP)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Stamps the commit and target into the binary (--version, About, bug reports).
+build = "../../scripts/build_identity.rs"
+
+[[bin]]
+name = "ggv"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ggv-annot.workspace = true
+ggv-io.workspace = true
+ggv-model.workspace = true
+ggv-query.workspace = true
+ggv-layout.workspace = true
+ggv-render.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

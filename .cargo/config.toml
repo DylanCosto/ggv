@@ -1,0 +1,4 @@
+[net]
+# Fetch git dependencies (pasta) with the git CLI: more dependable than cargo's built-in git on
+# Windows, and it uses your git settings (proxy, credentials).
+git-fetch-with-cli = true

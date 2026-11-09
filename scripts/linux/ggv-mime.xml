@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-bam">
+    <comment>BAM alignments</comment>
+    <glob pattern="*.bam"/>
+  </mime-type>
+  <mime-type type="application/x-cram">
+    <comment>CRAM alignments</comment>
+    <glob pattern="*.cram"/>
+  </mime-type>
+  <mime-type type="text/x-vcf">
+    <comment>VCF variants</comment>
+    <glob pattern="*.vcf"/>
+    <glob pattern="*.vcf.gz" weight="60"/>
+  </mime-type>
+  <mime-type type="application/x-bcf">
+    <comment>BCF variants</comment>
+    <glob pattern="*.bcf"/>
+  </mime-type>
+  <mime-type type="text/x-gtf">
+    <comment>GTF annotation</comment>
+    <glob pattern="*.gtf"/>
+    <glob pattern="*.gtf.gz" weight="60"/>
+  </mime-type>
+  <mime-type type="text/x-gff3">
+    <comment>GFF3 annotation</comment>
+    <glob pattern="*.gff3"/>
+    <glob pattern="*.gff"/>
+    <glob pattern="*.gff3.gz" weight="60"/>
+  </mime-type>
+  <mime-type type="text/x-bed">
+    <comment>BED intervals</comment>
+    <glob pattern="*.bed"/>
+    <glob pattern="*.bed.gz" weight="60"/>
+  </mime-type>
+</mime-info>

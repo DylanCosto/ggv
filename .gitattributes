@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.bam binary
+*.bai binary
+*.gz binary
+*.gzi binary
+*.tbi binary
+*.fai text eol=lf

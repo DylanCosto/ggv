@@ -1,0 +1,16 @@
+[package]
+name = "ggv-layout"
+description = "Turns alignments into drawable data: decoded reads, packed rows, binned coverage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ggv-io.workspace = true
+ggv-model.workspace = true
+ggv-query.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
