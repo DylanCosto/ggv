@@ -1557,7 +1557,9 @@ mod tests {
         assert_eq!(super::super::path_error(path, "failed to fill whole buffer"), format!("{}: failed to fill whole buffer", path.display()));
         // On the bar the path is cut to the file's name, leaving room for the reason.
         assert!(super::super::status_line(&e).starts_with("calls_plain.vcf: no index found"), "{}", super::super::status_line(&e));
-        assert_eq!(super::super::status_line("C:\\data\\a.bam: truncated\nb.bam: too"), "a.bam: truncated  ·  b.bam: too");
+        // A path in this system's own spelling (Windows backslashes are no separator on Linux).
+        let a = std::path::Path::new("data").join("a.bam");
+        assert_eq!(super::super::status_line(&format!("{}: truncated\nb.bam: too", a.display())), "a.bam: truncated  ·  b.bam: too");
         assert_eq!(super::super::status_line("No more variants in that direction"), "No more variants in that direction");
 
         let ctx = egui::Context::default();
