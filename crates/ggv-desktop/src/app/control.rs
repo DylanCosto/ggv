@@ -1378,8 +1378,9 @@ mod tests {
         assert!(layout.order[2].1.bottom() < rect.bottom());
         assert!(layout.edge_at(egui::pos2(500.0, layout.order[2].1.bottom())).is_none());
 
-        // Zoomed out past the read window: the alignment track shows coverage and a note, so it
-        // keeps no more room than that, and the genes, now with more rows, can use it.
+        // Zoomed out past the read window: the alignment track shows coverage and a note. A
+        // height the person set stays (so the tracks below don't jump), and the genes, now with
+        // more rows, use what is left; with none set it keeps no more room than it needs.
         app.attach_goto("chr20:10000000-60000000").unwrap();
         settle_all(&mut app, |a| a.genes.iter().all(|g| g.built.as_ref().is_some_and(|b| b.rows.len() > 1)));
         let (coverage, capped) = app.content_height(Hit::Track(0)).unwrap();
@@ -1395,14 +1396,68 @@ mod tests {
         let gene_rows = app.content_height(Hit::Genes(0)).unwrap().0;
         assert!(gene_rows > 40.0);
         let layout = app.arrange(window(800.0));
-        assert_eq!(layout.order[1].1.height(), coverage, "not the 300 set");
-        assert_eq!(layout.order[2].1.height(), gene_rows, "the gene rows take the room: {:?}", kinds(&layout));
+        assert_eq!(layout.order[1].1.height(), 300.0, "the height set");
+        assert_eq!(layout.order[2].1.height(), gene_rows.min(400.0), "the gene rows take the room: {:?}", kinds(&layout));
+        let bam = layout.order[1].0.clone();
+        app.arrangement.heights.remove(&bam);
+        assert_eq!(app.arrange(window(800.0)).order[1].1.height(), coverage, "none set");
         for k in app.track_keys() {
             app.arrangement.heights.insert(k, 100.0);
         }
 
         // Too little room: heights give way, nothing is stretched.
         assert!(app.arrange(window(150.0)).order.iter().all(|(_, r)| r.height() <= 100.0));
+    }
+
+    /// With room below the last track, dragging the edge under the alignment track moves the
+    /// genes down whole, back up again, and they stay put when zooming out hides the reads.
+    #[test]
+    fn dragging_the_edge_moves_the_genes_and_zooming_out_leaves_them() {
+        if !data_dir().join("HG002.revio.slices.bam").exists() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        let mut app = gnas_with_reads(&ctx, &[]);
+        let reads = app.content_height(Hit::Track(0)).unwrap().0;
+        let rect = window(reads + 600.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let raw = egui::RawInput { events, screen_rect: Some(rect), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                let layout = app.arrange(rect);
+                app.arrange_input(ui, &response, &layout);
+            });
+            out.textures_delta.clear();
+        };
+        let drag = |app: &mut App, dy: f32| {
+            let from = egui::pos2(500.0, app.arrange(rect).order[0].1.bottom());
+            let to = from + egui::vec2(0.0, dy);
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+            frame(app, vec![egui::Event::PointerMoved(from)]);
+            frame(app, vec![button(from, true)]);
+            frame(app, vec![egui::Event::PointerMoved(from + egui::vec2(0.0, dy / 2.0))]);
+            frame(app, vec![egui::Event::PointerMoved(to)]);
+            frame(app, vec![button(to, false)]);
+            frame(app, vec![]);
+        };
+        let start = app.arrange(rect);
+        let genes = start.order[1].1;
+        assert!(genes.bottom() < rect.bottom() - 200.0, "room below the genes: {genes:?}");
+        let moved = |app: &App| {
+            let g = app.arrange(rect).order[1].1;
+            assert!((g.height() - genes.height()).abs() < 0.5, "the same height: {g:?}, was {genes:?}");
+            g.top() - genes.top()
+        };
+
+        drag(&mut app, 200.0);
+        assert!((moved(&app) - 200.0).abs() < 0.5, "pushed down: {}", moved(&app));
+        assert!(!app.arrangement.heights.contains_key(&start.order[1].0), "the genes keep their automatic height");
+        drag(&mut app, -100.0);
+        assert!((moved(&app) - 100.0).abs() < 0.5, "back up: {}", moved(&app));
+
+        app.attach_goto("chr20:10000000-60000000").unwrap();
+        assert!(app.content_height(Hit::Track(0)).unwrap().1, "reads hidden");
+        assert!((moved(&app) - 100.0).abs() < 0.5, "where they were: {}", moved(&app));
     }
 
     /// In a small window, the alignment track (its reads scroll) gives way first; the small

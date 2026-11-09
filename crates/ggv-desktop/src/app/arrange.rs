@@ -1,6 +1,7 @@
 //! Arranging tracks: drag a track's header to move it, drag the edge between two tracks to
-//! give one's height to the other, like a splitter (double-click the edge to go back to the
-//! automatic height). With more tracks than fit, the last track's bottom edge resizes it alone.
+//! give one's height to the other, like a splitter, using the room below the last track first
+//! (double-click the edge to go back to the automatic height). With more tracks than fit, the
+//! last track's bottom edge resizes it alone.
 //! A grip in each header and a notch on each edge show where to take hold.
 //!
 //! Tracks are known by kind and file, so the arrangement survives tracks opening and closing
@@ -65,8 +66,9 @@ pub struct Saved {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Arranging {
     /// The edge under `key`: `key` gets taller as the track below (`below`, with its height
-    /// when the drag started) gets shorter; with none below, `key` alone changes.
-    Resize { key: Key, start_h: f32, start_y: f32, below: Option<(Key, f32)> },
+    /// when the drag started) gets shorter; with none below, `key` alone changes. See `split`
+    /// for `room` and `slack`.
+    Resize { key: Key, start_h: f32, start_y: f32, below: Option<(Key, f32)>, room: f32, slack: f32 },
     Move { key: Key, y: f32 },
 }
 
@@ -165,8 +167,9 @@ impl App {
     }
 
     /// The height of everything a track has to show (all its rows), and whether it shows so
-    /// little that it should be no taller than that (an alignment track zoomed out beyond the
-    /// read window: coverage and a note). `None` while that isn't known yet (nothing loaded).
+    /// little that, unless the person set its height, it should be no taller than that (an
+    /// alignment track zoomed out beyond the read window: coverage and a note). `None` while
+    /// that isn't known yet (nothing loaded).
     pub(super) fn content_height(&self, hit: Hit) -> Option<(f32, bool)> {
         match hit {
             Hit::Track(i) => {
@@ -234,7 +237,9 @@ impl App {
                 Some(h) => h,
                 None => MIN_SECTION_H.min(content.map_or(MIN_SECTION_H, |c| c.0)).max(readable),
             };
-            if let Some((c, true)) = content {
+            if let Some((c, true)) = content
+                && !self.arrangement.heights.contains_key(&k)
+            {
                 h = h.min(c);
             }
             let want = content.map_or(h, |c| c.0).max(h);
@@ -413,7 +418,10 @@ impl App {
                     }
                 }
                 let below = layout.order.iter().skip_while(|(k, _)| *k != key).nth(1).filter(|(_, b)| (b.top() - r.bottom()).abs() < 1.0).map(|(k, b)| (k.clone(), b.height()));
-                self.arranging = Some(Arranging::Resize { key, start_h: r.height(), start_y: p.y, below });
+                let room = if layout.stack.is_some() { 0.0 } else { (layout.avail - layout.order.iter().map(|(_, b)| b.height()).sum::<f32>()).max(0.0).floor() };
+                let shows = self.hit_of(&key).and_then(|hit| self.content_height(hit)).map_or(r.height(), |c| c.0);
+                let slack = if room > 0.0 { f32::INFINITY } else { (r.height() - shows).max(0.0) };
+                self.arranging = Some(Arranging::Resize { key, start_h: r.height(), start_y: p.y, below, room, slack });
             } else if let Some((key, _)) = on_header(p) {
                 self.arranging = Some(Arranging::Move { key, y: p.y });
             }
@@ -421,29 +429,20 @@ impl App {
         let Some(arranging) = self.arranging.clone() else { return false };
         let p = response.interact_pointer_pos().or(pointer);
         match arranging.clone() {
-            Arranging::Resize { key, start_h, start_y, below } => {
+            Arranging::Resize { key, start_h, start_y, below, room, slack } => {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                 if let Some(p) = p {
                     let dy = p.y - start_y;
                     match below {
-                        // A splitter: what one track gains the other loses, each down to its
-                        // minimum, and the tracks further away don't move.
+                        // A splitter: each track down to its minimum, and the tracks further
+                        // away don't move. Both heights are kept (an automatic one would go back
+                        // to what its rows need); the track below only if it changes, so one
+                        // merely pushed down keeps its automatic height.
                         Some((bkey, bh)) => {
-                            let dy = dy.clamp(min_height(key.0) - start_h, bh - min_height(bkey.0)).round();
-                            let a_flex = key.0 == Kind::Alignments && !self.arrangement.heights.contains_key(&key);
-                            let b_flex = bkey.0 == Kind::Alignments && !self.arrangement.heights.contains_key(&bkey);
-                            // An alignment track sharing the free space keeps sharing it when it
-                            // alone shares it, so it takes the change exactly; with others
-                            // sharing too it would take only its part, and the edge would lag the
-                            // pointer: then both sides get their height.
-                            let flex = |k: &Key| k.0 == Kind::Alignments && !self.arrangement.heights.contains_key(k);
-                            let others = layout.order.iter().filter(|(k, _)| *k != key && *k != bkey && flex(k)).count();
-                            let (a_flex, b_flex) = (a_flex && others == 0, b_flex && others == 0);
-                            if !a_flex || b_flex {
-                                self.arrangement.heights.insert(key.clone(), start_h + dy);
-                            }
-                            if !b_flex || a_flex {
-                                self.arrangement.heights.insert(bkey, bh - dy);
+                            let (h, new_bh) = split(dy, (start_h, min_height(key.0)), (bh, min_height(bkey.0)), room, slack);
+                            self.arrangement.heights.insert(key.clone(), h);
+                            if new_bh != bh || self.arrangement.heights.contains_key(&bkey) {
+                                self.arrangement.heights.insert(bkey, new_bh);
                             }
                         }
                         // The last track: it alone, no taller than leaves the others on screen.
@@ -535,6 +534,17 @@ struct Fit {
     align: bool,
 }
 
+/// Where dragging the edge between two tracks by `dy` leaves them, each given as (height,
+/// minimum). Down, the upper track takes `room` (what is free below the last track) first, which
+/// pushes the lower track down whole, and only then the lower track's height. Up, it gives back
+/// `slack` first (height it has no rows for, or anything while there is free room, which the
+/// lower track moves into), and only then does the lower track grow.
+fn split(dy: f32, (h, min): (f32, f32), (below, below_min): (f32, f32), room: f32, slack: f32) -> (f32, f32) {
+    let dy = dy.clamp(min - h, below - below_min + room).round();
+    let below = if dy >= 0.0 { below - (dy - room).max(0.0) } else { below + (-dy - slack).max(0.0) };
+    (h + dy, below)
+}
+
 /// Takes `excess` from the tracks, alignment tracks first (their reads scroll), each down to
 /// its `min`, in proportion to what it has above that.
 fn squeeze(fits: &mut [Fit], mut excess: f32) {
@@ -582,6 +592,27 @@ mod tests {
 
     fn k(kind: Kind, p: &str) -> Key {
         (kind, PathBuf::from(p))
+    }
+
+    /// With room below the last track the edge pushes the track below down whole; past that it
+    /// takes the track's height, down to its minimum.
+    #[test]
+    fn dragging_an_edge_down_uses_the_free_room_first() {
+        let (upper, lower) = ((500.0, 48.0), (52.0, 30.0));
+        assert_eq!(split(100.0, upper, lower, 300.0, f32::INFINITY), (600.0, 52.0), "within the room");
+        assert_eq!(split(310.0, upper, lower, 300.0, f32::INFINITY), (810.0, 42.0), "past it");
+        assert_eq!(split(900.0, upper, lower, 300.0, f32::INFINITY), (822.0, 30.0), "the lower track's minimum");
+        assert_eq!(split(10.0, upper, lower, 0.0, 0.0), (510.0, 42.0), "no room: a plain splitter");
+    }
+
+    /// Back up, a track gives up the height it has no rows for before the one below stretches.
+    #[test]
+    fn dragging_an_edge_up_gives_back_the_slack_first() {
+        let (upper, lower) = ((800.0, 48.0), (52.0, 30.0));
+        assert_eq!(split(-100.0, upper, lower, 0.0, 300.0), (700.0, 52.0), "within the slack");
+        assert_eq!(split(-310.0, upper, lower, 0.0, 300.0), (490.0, 62.0), "past it");
+        assert_eq!(split(-100.0, upper, lower, 200.0, f32::INFINITY), (700.0, 52.0), "free room: it moves up whole");
+        assert_eq!(split(-900.0, upper, lower, 0.0, 300.0), (48.0, 504.0), "the upper track's minimum");
     }
 
     #[test]

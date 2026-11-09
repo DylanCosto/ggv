@@ -272,7 +272,7 @@ every shortcut:
 | Step through variants | **< Variant** / **Variant >**, Ctrl+B / Ctrl+F |
 | Pan | Drag (horizontal: genome; vertical: read rows), arrow keys, trackpad sideways scroll |
 | Scroll rows | Drag up/down in a track, or `↑`/`↓`, PageUp/PageDown over it |
-| Arrange tracks | Drag a track's header bar to move it (a blue line shows where it lands); drag the edge between two tracks to give one's height to the other (the tracks further away stay put; the last track's bottom edge stops at the window's bottom), double-click an edge for the automatic height. Heights saved on a bigger screen shrink to fit. Saved with the session |
+| Arrange tracks | Drag a track's header bar to move it (a blue line shows where it lands); drag the edge between two tracks to give one's height to the other, or into the room below the last track to move the track under it (the tracks further away stay put; a height you set is kept when zooming out hides the reads; the last track's bottom edge stops at the window's bottom), double-click an edge for the automatic height. Heights saved on a bigger screen shrink to fit. Saved with the session |
 | Inspect | Hover a read (name, span, strand, MAPQ, flags, mismatches, the base under the pointer) or a coverage column (depth and allele counts) |
 | Exact counts | Tick **Evidence**, click a base to outline it (again, or Esc, to clear) |
 | Region stats | Shift-drag across the tracks |
