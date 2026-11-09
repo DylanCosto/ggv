@@ -339,7 +339,8 @@ fn batch_links_work_for_hash_contigs() {
 #[test]
 fn demo_suggests_commands_ggv_accepts() {
     // `ggv mcp <bam>` was printed, which clap rejects: alignments take `-b`.
-    let dir = PathBuf::from("C:/demo dir/v1");
+    // A folder that breaks unquoted commands: a space, parentheses, an apostrophe and `&`.
+    let dir = PathBuf::from("C:/Program Files (x86)/O'Brien & co/v1");
     let d = ggv_io::demo::Demo {
         bam: dir.join("a.bam"),
         vcfs: vec![dir.join("a.vcf.gz"), dir.join("b.vcf.gz")],

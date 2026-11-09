@@ -14,7 +14,7 @@ a download, compare `sha256sum <file>` (`Get-FileHash <file>` on Windows) with t
 | Linux (x86_64) | `ggv-<version>-linux-x86_64.tar.gz` | glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer), X11 or Wayland, Vulkan or OpenGL drivers |
 | macOS 11+ (Apple silicon and Intel) | `ggv-<version>-macos-universal.zip` | nothing else |
 
-**Windows.** Unzip, then in that folder:
+**Windows.** Unzip; it makes a `ggv-<version>-windows-x64` folder. In that folder:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1

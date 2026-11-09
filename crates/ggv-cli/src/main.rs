@@ -986,9 +986,12 @@ fn first_time(warning: &str) -> bool {
 
 /// The commands `ggv demo` suggests, as typed in a shell (paths with spaces quoted).
 fn demo_commands(d: &ggv_io::demo::Demo) -> Vec<String> {
+    // Quoted when anything in it would break a pasted command (spaces, `'`, `&`, parentheses as
+    // in "Program Files (x86)"); double quotes work in cmd, PowerShell and sh alike.
     let q = |p: &std::path::Path| {
         let s = p.display().to_string();
-        if s.contains(' ') { format!("\"{s}\"") } else { s }
+        let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:\\".contains(c);
+        if s.chars().all(plain) { s } else { format!("\"{s}\"") }
     };
     let vcfs: Vec<String> = d.vcfs.iter().map(|v| format!("-v {}", q(v))).collect();
     let (bam, fa, genes, vcfs) = (q(&d.bam), q(&d.reference), q(&d.genes), vcfs.join(" "));

@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-annot"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "flate2",
  "ggv-io",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-cli"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-desktop"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-io"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "flate2",
  "ggv-model",
@@ -1446,7 +1446,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-layout"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ggv-io",
  "ggv-model",
@@ -1456,7 +1456,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-model"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-query"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ggv-io",
  "ggv-model",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "ggv-render"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ggv-io",
  "ggv-layout",

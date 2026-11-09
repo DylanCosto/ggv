@@ -37,7 +37,11 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: |
-          $dir = Get-ChildItem dist -Directory | Where-Object Name -like 'ggv-*-windows-x64' | Select-Object -First 1
+          # From the zip as people download it: one folder holding ggv.
+          $zip = Get-ChildItem dist -Filter 'ggv-*-windows-x64.zip' | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath unzipped
+          $dir = Get-ChildItem unzipped -Directory
+          if (@($dir).Count -ne 1 -or @(Get-ChildItem unzipped -File).Count -ne 0) { throw "the zip should hold one folder" }
           & "$($dir.FullName)\ggv.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "ggv --version failed" }
       - uses: actions/upload-artifact@v4

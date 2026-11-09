@@ -35,7 +35,9 @@ try {
     Copy-Item (Join-Path $PSScriptRoot 'install.ps1') $stage
     $zip = Join-Path $dist "$name.zip"
     if (Test-Path $zip) { Remove-Item -Force $zip }
-    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
+    # The folder itself, so unzipping makes one ggv-<version>-windows-x64 folder rather than
+    # scattering its files wherever the zip is.
+    Compress-Archive -Path $stage -DestinationPath $zip
     Write-Output "packed $zip"
 }
 finally {
