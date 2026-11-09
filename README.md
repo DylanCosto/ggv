@@ -4,7 +4,7 @@ A fast genome viewer for people and AI agents. Look at your reads, variants and 
 desktop app, ask the same questions from the command line, or let an agent ask them over the
 Model Context Protocol (MCP), and get the same numbers every way.
 
-![GGV showing allele-specific methylation at the imprinted GNAS locus: HG002 long reads grouped by haplotype and coloured by base modification, with variants, genes and the Evidence panel](https://raw.githubusercontent.com/DylanCosto/GGV/main/docs/images/ggv-desktop.png)
+![GGV showing allele-specific methylation at the imprinted GNAS locus: HG002 long reads grouped by haplotype and coloured by base modification, with variants, genes and the Evidence panel](https://raw.githubusercontent.com/DylanCosto/ggv/main/docs/images/ggv-desktop.png)
 
 - **Desktop app** (`ggv-desktop`): BAM/CRAM, VCF/BCF, gene annotations and signal tracks, about
   half a millisecond per frame on deep data. Split views, variant review, an exact-count
@@ -17,12 +17,12 @@ Model Context Protocol (MCP), and get the same numbers every way.
   desktop app, an agent sees what you're looking at, so "is this variant real?" needs no
   coordinates.
 
-GGV 0.9 is a **beta for local files**. Please [report bugs](https://github.com/DylanCosto/GGV/issues/new?template=bug_report.yml)
+GGV 0.9 is a **beta for local files**. Please [report bugs](https://github.com/DylanCosto/ggv/issues/new?template=bug_report.yml)
 with the diagnostics from **Commands → About GGV**.
 
 ## Install
 
-Download the package for your system from [Releases](https://github.com/DylanCosto/GGV/releases):
+Download the package for your system from [Releases](https://github.com/DylanCosto/ggv/releases):
 
 | System | Package | Needs |
 |---|---|---|
@@ -39,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1   # Windows
 
 Unsigned builds trigger a warning the first time: on Windows choose **More info → Run anyway**;
 on macOS `install.sh` clears the quarantine for you. Details, uninstalling and checking
-downloads: [docs/install.md](https://github.com/DylanCosto/GGV/blob/main/docs/install.md).
+downloads: [docs/install.md](https://github.com/DylanCosto/ggv/blob/main/docs/install.md).
 
 ## Quick start
 
@@ -89,12 +89,12 @@ GGV shows and counts what's in your files; it isn't a variant caller.
 
 ## Documentation
 
-- [Desktop app](https://github.com/DylanCosto/GGV/blob/main/docs/desktop.md): reading alignments, variants, review, splicing, signal tracks, keyboard shortcuts
-- [Command line](https://github.com/DylanCosto/GGV/blob/main/docs/cli.md): queries, rendering and batch reports
-- [Agents (MCP)](https://github.com/DylanCosto/GGV/blob/main/docs/mcp.md): every tool, and working attached to the desktop app
-- [Genomes](https://github.com/DylanCosto/GGV/blob/main/docs/genomes.md): built-in references and tracks
-- [Install](https://github.com/DylanCosto/GGV/blob/main/docs/install.md): packages, installers and first run
-- [Development](https://github.com/DylanCosto/GGV/blob/main/docs/development.md): crates, correctness checks and building
+- [Desktop app](https://github.com/DylanCosto/ggv/blob/main/docs/desktop.md): reading alignments, variants, review, splicing, signal tracks, keyboard shortcuts
+- [Command line](https://github.com/DylanCosto/ggv/blob/main/docs/cli.md): queries, rendering and batch reports
+- [Agents (MCP)](https://github.com/DylanCosto/ggv/blob/main/docs/mcp.md): every tool, and working attached to the desktop app
+- [Genomes](https://github.com/DylanCosto/ggv/blob/main/docs/genomes.md): built-in references and tracks
+- [Install](https://github.com/DylanCosto/ggv/blob/main/docs/install.md): packages, installers and first run
+- [Development](https://github.com/DylanCosto/ggv/blob/main/docs/development.md): crates, correctness checks and building
 
 ## Build from source
 
@@ -110,6 +110,6 @@ through [pasta](https://github.com/DylanCosto/pasta), a pure-Rust library for SA
 
 ## License
 
-MIT; see [LICENSE](https://github.com/DylanCosto/GGV/blob/main/LICENSE). Bundled open-source components are listed in
-[THIRD_PARTY_NOTICES.md](https://github.com/DylanCosto/GGV/blob/main/THIRD_PARTY_NOTICES.md), including the MANE transcript list
+MIT; see [LICENSE](https://github.com/DylanCosto/ggv/blob/main/LICENSE). Bundled open-source components are listed in
+[THIRD_PARTY_NOTICES.md](https://github.com/DylanCosto/ggv/blob/main/THIRD_PARTY_NOTICES.md), including the MANE transcript list
 (NCBI/EMBL-EBI, public domain).

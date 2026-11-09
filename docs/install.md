@@ -1,7 +1,7 @@
 # Installing GGV
 
 Download the package for your system from the
-[Releases](https://github.com/DylanCosto/GGV/releases) page. Each holds `ggv` (command line and
+[Releases](https://github.com/DylanCosto/ggv/releases) page. Each holds `ggv` (command line and
 MCP server) and `ggv-desktop` (the viewer), an installer, this README, the LICENSE and THIRD_PARTY_NOTICES.md (the open-source crates
 inside). To check
 a download, compare `sha256sum <file>` (`Get-FileHash <file>` on Windows) with the release's

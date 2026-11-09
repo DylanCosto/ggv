@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 /// Where the files are published, one URL per file name.
-const BASE_URL: &str = "https://github.com/DylanCosto/GGV/releases/download/demo-v1";
+const BASE_URL: &str = "https://github.com/DylanCosto/ggv/releases/download/demo-v1";
 
 /// Every file, by name, and the whole download's size (for progress before it starts).
 pub const FILES: &[&str] = &[
