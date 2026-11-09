@@ -175,7 +175,12 @@ impl App {
                     return Some((READS_TOP + NOTE_H, true));
                 }
                 let cur = self.tracks[i].current.as_ref()?;
-                cur.view.reads.as_ref()?;
+                let (reads, _) = cur.view.reads.as_ref()?;
+                // Reads loaded around the view but none on it: coverage and "No reads in view",
+                // not a tall empty band sized to rows off screen.
+                if !super::reads_in_view(reads, &cur.packed, vs, ve) {
+                    return Some((READS_TOP + NOTE_H, true));
+                }
                 let rl = crate::tracks::row_layout(&cur.packed, cur.style);
                 Some((READS_TOP + rl.content_height() + 12.0, false))
             }

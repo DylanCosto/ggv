@@ -3033,7 +3033,12 @@ impl App {
             Hit::Track(i) => {
                 let t = self.tracks.get(i)?;
                 let cur = t.current.as_ref()?;
-                cur.view.reads.as_ref()?;
+                let (reads, _) = cur.view.reads.as_ref()?;
+                // No rows to scroll when none of the loaded reads is on screen.
+                let (vs, ve) = self.visible();
+                if !reads_in_view(reads, &cur.packed, vs, ve) {
+                    return None;
+                }
                 let rl = tracks::row_layout(&cur.packed, cur.style);
                 let area = below(READS_TOP);
                 RowScroll { area, scroll: t.scroll_y, max: (rl.content_height() - area.height() + 12.0).max(0.0), rows: rl.rows, pitch: rl.pitch, noun: "rows" }
@@ -3852,14 +3857,22 @@ impl App {
         let rl = tracks::row_layout(packed, cur.style);
         let reads_rect = Rect::from_min_max(Pos2::new(section.left(), top + READS_TOP), section.max).intersect(painter.clip_rect());
         let rp = painter.with_clip_rect(reads_rect);
-        // Nothing to draw: say why rather than leave the track blank.
-        if packed.rows.is_empty() {
-            let why = if reads.is_empty() { "No reads here".to_owned() } else { format!("No reads pass the read filters here ({} hidden)", commas(reads.len() as u64)) };
+        // Nothing to draw: say why rather than leave the track blank. Reads loaded around the view
+        // (for panning) but none on screen count as none: no group labels or counts for them.
+        let in_view = reads_in_view(reads, packed, vs, ve);
+        if !in_view {
+            let why = if reads.is_empty() {
+                "No reads here".to_owned()
+            } else if packed.rows.is_empty() {
+                format!("No reads pass the read filters here ({} hidden)", commas(reads.len() as u64))
+            } else {
+                "No reads in view".to_owned()
+            };
             rp.text(Pos2::new(section.left() + 4.0, top + READS_TOP + 4.0), Align2::LEFT_TOP, why, small.clone(), muted);
         }
 
         // Group labels, in the gap row above each group.
-        for g in &packed.groups {
+        for g in packed.groups.iter().filter(|_| in_view) {
             let y = top + READS_TOP + g.first_row as f32 * rl.pitch - t.scroll_y;
             if g.first_row > 0 {
                 rp.hline(section.x_range(), y - rl.pitch / 2.0, Stroke::new(1.0, self.pal().rule_strong));
@@ -4320,8 +4333,12 @@ impl App {
             right,
         );
         let close = Layout::close_button(section);
-        // What the site colours mean, after the title while it fits.
-        if let variants::SiteColor::Info(key) = &v.color {
+        // What the site colours mean, after the title while it fits; nothing (not a bare
+        // "CLNSIG:") when no loaded record has the field.
+        let legend = v.legend(6);
+        if let variants::SiteColor::Info(key) = &v.color
+            && !legend.is_empty()
+        {
             let font = FontId::proportional(10.5);
             let cy = top + HEADER_H / 2.0;
             let mut x = title.right() + 14.0;
@@ -4330,7 +4347,7 @@ impl App {
                 let w = galley.size().x;
                 painter.galley(Pos2::new(x, cy - galley.size().y / 2.0), galley, self.pal().text);
                 x += w + 6.0;
-                for (label, [r, g, b]) in v.legend(6) {
+                for (label, [r, g, b]) in legend {
                     let galley = painter.layout_no_wrap(label, font.clone(), self.pal().text);
                     if x + 12.0 + galley.size().x > right - 2.0 {
                         break;
@@ -4757,6 +4774,11 @@ fn load_span(center: f64, vis: f64, contig_len: u64) -> (u64, u64, bool) {
 
 /// Reads in one packed row that overlap `[vs, ve)`. Rows hold non-overlapping reads sorted by
 /// start, so their ends are sorted too and a binary search finds the first.
+/// Whether any packed (filtered) read overlaps `vs..ve`.
+fn reads_in_view(reads: &[AlignedRead], packed: &ggv_layout::Packed, vs: f64, ve: f64) -> bool {
+    packed.rows.iter().any(|row| visible_in_row(reads, row, vs, ve).next().is_some())
+}
+
 fn visible_in_row<'a>(reads: &'a [AlignedRead], row: &'a [usize], vs: f64, ve: f64) -> impl Iterator<Item = &'a AlignedRead> {
     let first = row.partition_point(|&i| (reads[i].end as f64) <= vs);
     row[first..].iter().map(move |&i| &reads[i]).take_while(move |r| (r.start as f64) < ve)
@@ -4816,6 +4838,24 @@ fn evidence_text(name: &str, locus: &str, s: &ggv_query::PositionStats) -> Strin
 
 #[cfg(test)]
 mod tests {
+    /// Reads loaded around the view for panning, but none on screen: the track says "No reads
+    /// in view" and shows no row count or scrollbar for them.
+    #[test]
+    fn reads_loaded_beside_the_view_are_not_in_view() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/hg002-revio");
+        let Ok(mut bam) = ggv_io::BamFile::open(data.join("HG002.revio.slices.bam")) else { return };
+        let region = ggv_model::Region { contig: "chr20".into(), start: 31_165_000, end: 31_184_000 };
+        let view = ggv_layout::load_view(&mut bam, &region, None, String::new(), &ggv_layout::ViewOptions { max_rows: 0, ..Default::default() }).unwrap();
+        let (reads, _) = view.reads.as_ref().unwrap();
+        // Packed as the app packs them (the loader leaves that to it).
+        let packed = &ggv_layout::pack(reads, 10_000, 2);
+        assert!(!reads.is_empty());
+        assert!(super::reads_in_view(reads, packed, 31_170_000.0, 31_170_100.0));
+        // Past the last read's end, still inside what a pan might load.
+        let end = reads.iter().map(|r| r.end).max().unwrap() as f64;
+        assert!(!super::reads_in_view(reads, packed, end + 10.0, end + 110.0));
+    }
+
     #[test]
     fn annotation_builds_from_file_names() {
         use std::path::Path;
