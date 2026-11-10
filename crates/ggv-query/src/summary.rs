@@ -66,7 +66,7 @@ pub struct VariableSite {
     pub length: u64,
 }
 
-#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+/// For serde's `skip_serializing_if`, which passes a reference.
 fn is_one(n: &u64) -> bool {
     *n == 1
 }

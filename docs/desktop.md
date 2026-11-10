@@ -102,7 +102,11 @@ sit at the bottom, as in IGV: thick CDS, thin UTRs, introns with strand chevrons
 underneath (skipped where they would collide). One transcript per gene is shown (MANE Select,
 then MANE Plus Clinical, then Ensembl canonical, then the curated transcript with the longest CDS,
 then predicted models); MANE comes from the file's tags or, for files without them such as UCSC's
-ncbiRefSeq, from the MANE GRCh38 v1.5 list (NCBI/EMBL-EBI, public domain) built into GGV. Tick **All transcripts** to see every one. Hover
+ncbiRefSeq, from the MANE GRCh38 v1.5 list (NCBI/EMBL-EBI, public domain) built into GGV. Tick **All transcripts** to see every one.
+Where a gene's main transcript doesn't reach (another promoter's first exon, a longer 3' end),
+the track says whose other transcripts are there instead of "No genes here", and the Evidence
+panel and consequences name the gene's best transcript at the base, as an agent's `evidence`
+does. A transcript without introns shows its strand beside its name (`< SSA1`, `VPS8 >`). Hover
 for the transcript id, biotype, exon count, coding length, tags, and which exon (numbered in the
 direction of transcription) is under the pointer. Double-click a gene to fit it in the view. Type a gene name, gene id or transcript id
 (`BRCA1`, `ENSG00000012048`, `ENST00000357654.9`) in the locus box to jump to it. With no BAM
@@ -149,7 +153,8 @@ times with it loaded: about 1 ms across all of chr17, 0.4 ms at 2 Mb, and unchan
   genotypes, DP and AD.
 - **Variant triage** (**Review…**, or `--review`): steps through a VCF's sites. Press 1 / 2 / 3
   to mark the outlined site real / artifact / unsure (with an optional note) and move on, N / P
-  to skip. Decisions are saved on every change to `<vcf>.ggv-review.tsv` next to the VCF, so a
+  to skip. **Passing sites only** leaves out records whose FILTER isn't PASS (the RefCall and
+  LowQual records a caller writes beside its calls). Decisions are saved on every change to `<vcf>.ggv-review.tsv` next to the VCF, so a
   review resumes where it stopped; reviewed sites get a coloured tick on the track. When the
   VCF's folder can't be written (a read-only share), decisions go to GGV's own folder instead and
   the review says where; **Save reviews in…** picks a folder for every review and queue. Saves
@@ -249,7 +254,8 @@ every shortcut:
   loaded (no disk). `]` / `[` step to the next / previous one; beyond what is loaded a
   background pileup scan of both files finds it, across chromosomes.
 - **Measure** (Ctrl+drag): length, GC content, and each track's mean depth and read count over
-  the span, live while dragging, from loaded data.
+  the span, live while dragging, from loaded data. It stays until Esc, and shows only while some
+  of the span is in view.
 - **Copy as**: right-click to copy a read's sequence or SAM line, the selection (or view) as
   FASTA, the selected reads as SAM, or the view as an image (Ctrl+Shift+C) straight to the
   clipboard. Copies that need the disk run on a background thread.

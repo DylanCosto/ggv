@@ -992,14 +992,21 @@ impl App {
                     f.error = (!f.text.trim().is_empty()).then(|| expr::Expr::parse(&f.text).err()).flatten();
                 }
                 apply |= edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                match &f.error {
-                    Some(e) => {
-                        ui.colored_label(Color32::from_rgb(200, 60, 60), e);
+                // The same room for an error (one line) as for the hint (two): the buttons
+                // below don't jump under the pointer as the expression turns valid.
+                let room = 2.0 * ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), room), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.set_min_height(room);
+                    match &f.error {
+                        Some(e) => {
+                            ui.colored_label(Color32::from_rgb(200, 60, 60), e);
+                        }
+                        None => {
+                            let hint = format!("Applies where reads are loaded (views up to {}), on top of the flag and MAPQ filters.", super::fmt_bp(super::read_window()));
+                            ui.label(egui::RichText::new(hint).weak());
+                        }
                     }
-                    None => {
-                        ui.label(egui::RichText::new("Applies where reads are loaded (views under 100 kb), on top of the flag and MAPQ filters.").weak());
-                    }
-                }
+                });
                 ui.horizontal(|ui| {
                     apply |= ui.add_enabled(f.error.is_none(), egui::Button::new("Apply")).clicked();
                     if ui.button("Clear").clicked() {
@@ -1741,9 +1748,14 @@ impl App {
             }
         }
 
+        // Only while some of it is in view: its readout is held inside the pane, so a
+        // measurement left behind by a jump stayed on screen over the first track's header,
+        // saying "zoom in to measure" about a place no longer shown.
         if let Some((c, a, b)) = self.measure
             && c == self.contig
             && b > a
+            && x_of(b as f64) > rect.left()
+            && x_of(a as f64) < rect.right()
         {
             let (x0, x1) = span(a, b);
             let top = rect.top() + super::REF_TOP - 1.0;

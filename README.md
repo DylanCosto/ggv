@@ -44,7 +44,7 @@ downloads: [docs/install.md](https://github.com/DylanCosto/ggv/blob/main/docs/in
 ## Quick start
 
 Try it on real data first: **Open the demo** on the start screen (or `ggv-desktop --demo`)
-downloads 4.3 MB of PacBio HiFi reads of GIAB HG002 once and gives a five-step tour.
+downloads 4.3 MB of PacBio HiFi reads of GIAB HG002 once and gives a six-step tour.
 
 ```sh
 # Desktop: BAMs, variants and genes; the last argument is a locus or a gene name

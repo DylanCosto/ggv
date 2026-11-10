@@ -416,6 +416,27 @@ mod tests {
         })
     }
 
+    /// The window's comparison counts each track under its own filter; so does the tool, where
+    /// it used to count both under the first file's and find nothing.
+    #[test]
+    fn compare_takes_each_tracks_own_filter() {
+        let mut p = pane();
+        p["filters"][0]["expression"] = json!("hp == 1");
+        p["filters"][1]["expression"] = json!("hp == 2");
+        let (a, applied, notes) = fill("compare", &json!({}), &p);
+        assert_eq!((a["a_filters"]["filter"].as_str(), a["b_filters"]["filter"].as_str()), (Some("hp == 1"), Some("hp == 2")));
+        assert_eq!(a["a_filters"]["min_mapq"], 20);
+        assert!(a.get("filter").is_none(), "no one filter for both: {a}");
+        assert_eq!(applied["filters"]["b"]["expression"], "hp == 2");
+        assert!(notes.iter().any(|n| n.contains("each was counted with its own")), "{notes:?}");
+        // The same filter on both: one filter, as for any other tool.
+        let (a, _, notes) = fill("compare", &json!({}), &pane());
+        assert!(a.get("a_filters").is_none() && a["filter"] == "!supplementary" && notes.is_empty(), "{a} {notes:?}");
+        // Another tool over the two files still says which filter it used for both.
+        let (_, _, notes) = fill("summarize", &json!({}), &p);
+        assert!(notes.iter().any(|n| n.contains("different read filters")), "{notes:?}");
+    }
+
     #[test]
     fn fills_base_region_files_and_filters() {
         let (a, applied, notes) = fill("evidence", &json!({}), &pane());

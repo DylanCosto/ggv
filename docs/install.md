@@ -56,8 +56,8 @@ app and choose Open. Open files from the app, by dragging them onto its window, 
 
 **First run.** With nothing open, GGV shows how to start. **Open the demo** downloads 4.3 MB
 of real PacBio HiFi reads of GIAB HG002 (chr20, with calls, genes and the reference) once and
-opens it with a five-step tour: a deletion on one haplotype, Evidence at a base, methylation,
-variant review, then what your own files need. Also `ggv-desktop --demo`, or `ggv demo` to
+opens it with a six-step tour: a deletion on one haplotype, Evidence at a base, methylation,
+variant review, the command palette and agents, then what your own files need. Also `ggv-desktop --demo`, or `ggv demo` to
 download it and print commands to try. **Commands → About GGV** shows the exact build and has
 **Copy diagnostics** (build, system, graphics, open files and recent errors, file names only
 unless you tick full paths) for bug reports; nothing is sent anywhere. Evidence reports end

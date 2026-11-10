@@ -1,6 +1,6 @@
 //! The demo (real HG002 long reads, 4.3 MB, downloaded once), the welcome shown when nothing is open,
 //! and a short tour: a deletion on one haplotype, Evidence at a base, methylation, variant review,
-//! then what your own files need.
+//! the command palette and agents, then what your own files need.
 
 use eframe::egui::{self, Align2, Rect, RichText, Vec2};
 use ggv_io::demo;
@@ -21,10 +21,21 @@ const STEPS: &[(&str, &str)] = &[
         "Variant review steps through the calls: mark each real, artifact or unsure (keys 1, 2, 3; N and P step) with an optional note. Decisions are saved as you go, beside the VCF.",
     ),
     (
+        "Every command, and agents",
+        "Ctrl+K finds every command, gene, bookmark and recent file by a few letters; ? lists the keys. An AI agent can look at this window with you: started as `ggv mcp --attach`, it answers about what you see (the outlined base, the selection, the view), so \"is this variant real?\" needs no coordinates.",
+    ),
+    (
         "Your own data",
         "Open alignments (BAM or CRAM) with their index (.bai, .csi or .crai; GGV offers to build a missing one), and a reference: a FASTA with its .fai, or a built-in genome from Reference (it downloads once). CRAM needs the reference it was made with. Add variants (VCF or BCF, indexed .tbi or .csi), genes (GTF, GFF3 or BED) and signals (bigWig, bedGraph, SEG). Drag files onto the window, or use the toolbar.",
     ),
 ];
+
+/// The step whose button opens the command palette.
+const PALETTE_STEP: usize = 4;
+
+/// The tour window's distance from the window's right edge and from its bottom (clear of the
+/// status bar).
+const TOUR_MARGIN: Vec2 = Vec2::new(12.0, 40.0);
 
 impl App {
     /// Opens the demo at the tour's first stop, with the tour; downloads it first (once, in the
@@ -73,6 +84,7 @@ impl App {
                     self.start_review(0);
                 }
             }
+            PALETTE_STEP => self.run(super::actions::Action::Palette, ctx),
             _ => self.run(super::actions::Action::AddBam, ctx),
         }
     }
@@ -85,9 +97,13 @@ impl App {
         let mut open = true;
         let mut go = None;
         let mut show = false;
-        egui::Window::new("Tour")
-            .id(egui::Id::unique(("tour", self.reference_slot)))
-            .anchor(Align2::RIGHT_TOP, Vec2::new(-12.0, 90.0))
+        // Bottom right: the top right is where the panels it talks about open (Evidence, Variant
+        // review), the top is the tracks' headers, and the bottom left is where the gene track
+        // says what is there. Down here it is over the end of the side column, or, with none
+        // open, the last read rows' right end. It starts there and can be dragged away.
+        let spot = (ctx.content_rect().right_bottom() - TOUR_MARGIN, Align2::RIGHT_BOTTOM);
+        let id = egui::Id::unique(("tour", self.reference_slot));
+        super::inspector::placed(ctx, egui::Window::new("Tour"), id, spot, self.pane_settled())
             .resizable(false)
             .collapsible(true)
             .open(&mut open)
@@ -98,7 +114,11 @@ impl App {
                 ui.label(text);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    let label = if k + 1 == STEPS.len() { "Open my files…" } else { "Show me" };
+                    let label = match k {
+                        _ if k + 1 == STEPS.len() => "Open my files…",
+                        PALETTE_STEP => "Open the palette",
+                        _ => "Show me",
+                    };
                     if ui.button(label).clicked() {
                         show = true;
                     }

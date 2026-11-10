@@ -118,8 +118,8 @@ pub(super) fn placed<'a>(ctx: &egui::Context, window: egui::Window<'a>, id: egui
     if settled {
         ctx.data_mut(|d| d.insert_temp(key, held + 1));
     }
-    let width = ctx.memory(|m| m.area_rect(id)).map_or(0.0, |r| r.width());
-    let left_top = egui::pos2(pos.x - pivot.x().to_factor() * width, pos.y);
+    let size = ctx.memory(|m| m.area_rect(id)).map_or(egui::Vec2::ZERO, |r| r.size());
+    let left_top = egui::pos2(pos.x - pivot.x().to_factor() * size.x, pos.y - pivot.y().to_factor() * size.y);
     if let Some(mut state) = egui::AreaState::load(ctx, id) {
         state.pivot = egui::Align2::LEFT_TOP;
         state.pivot_pos = Some(left_top);

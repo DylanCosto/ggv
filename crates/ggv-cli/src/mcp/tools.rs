@@ -887,7 +887,7 @@ impl State {
             tool(
                 "queue",
                 "Review queue",
-                "A list of places to step through and decide pass, fail or unsure, as the window's Review queue does. `open` a list file at `path` (BED, VCF, or one locus per line) or `paste` `text`; `decide` the current item (`decision`, optional `note`; saves and moves to the next undecided item); `note`; `next`, `prev`, `next_undecided`, or `go` to item `index` (1-based); `export` the decisions to `path` (.bed or .tsv; a file open in GGV, or its index, is refused); `stop`. Returns the queue: position, counts, the file decisions are saved in, and every item with its decision. Reopening the same list resumes its decisions.",
+                "A list of places to step through and decide pass, fail or unsure, as the window's Review queue does. `open` a list file at `path` (BED, VCF, or one locus per line) or `paste` `text`; `decide` the current item (`decision`, optional `note`; saves and moves to the next undecided item); `note`; `next`, `prev`, `next_undecided`, or `go` to item `index` (1-based); `export` the decisions to `path` (.bed or .tsv; a file open in GGV, or its index, is refused); `stop`. Returns the queue: position, counts, the file decisions are saved in, every item with its decision, and how many lines of the list were not places (`lines_not_understood`). Reopening the same list resumes its decisions.",
                 schema(&[], &[json!({
                     "action": {"type": "string", "enum": ["status", "open", "paste", "decide", "note", "next", "prev", "next_undecided", "go", "export", "stop"]},
                     "path": {"type": "string"}, "text": {"type": "string"},
@@ -901,7 +901,7 @@ impl State {
             tool(
                 "panes",
                 "Split view",
-                "The GGV window's panes (side-by-side views of the same files): `list` (default); `split` adds a pane at `locus` (else where the target pane is; at most 4); `close` closes the target `pane`; `activate` makes it the one the person's keys and the toolbar act on; `link` sets whether panes scroll and zoom together (`linked`). Returns the pane count, each pane's region, the active pane and whether linked; a new pane reaches its locus as it loads, so its region is right once `view` reports it `ready`.",
+                "The GGV window's panes (side-by-side views of the same files): `list` (default); `split` adds a pane at `locus` (else where the target pane is; at most 4); `close` closes the target `pane`; `activate` makes it the one the person's keys and the toolbar act on; `link` sets whether panes scroll and zoom together (`linked`). Returns the pane count, each pane's region, the active pane and whether linked; a new pane reaches its locus as it loads: until then its `region` is null and `going_to` says where it was sent (`view` reports it `ready` once there).",
                 schema(&[], &[json!({
                     "action": {"type": "string", "enum": ["list", "split", "close", "activate", "link"]},
                     "locus": {"type": "string"}, "linked": {"type": "boolean"}
@@ -2798,15 +2798,7 @@ fn pick_transcripts(ts: Vec<&ggv_annot::Transcript>, all: bool) -> (Vec<&ggv_ann
     if all {
         return (ts, 0);
     }
-    let rank = |t: &ggv_annot::Transcript| (t.representative, !ggv_annot::is_predicted(&t.id), t.cds.is_some(), t.cds_len());
-    let mut out: Vec<&ggv_annot::Transcript> = Vec::new();
-    for t in &ts {
-        match out.iter().position(|o| o.gene_id == t.gene_id) {
-            Some(i) if rank(t) > rank(out[i]) => out[i] = t,
-            Some(_) => {}
-            None => out.push(t),
-        }
-    }
+    let out = ggv_annot::one_per_gene(ts.iter().copied());
     let hidden = ts.len() - out.len();
     (out, hidden)
 }

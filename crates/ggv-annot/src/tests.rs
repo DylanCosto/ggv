@@ -390,3 +390,21 @@ fn representative_is_mane_in_real_refseq_when_given() {
         eprintln!("{gene}: {} on {}", main[0].id, g.contig);
     }
 }
+
+/// GNAS in the HG002 fixture: its MANE Select transcript starts at the last promoter, 37 kb
+/// after the XLαs first exon, which is coding in the curated NM_080425.4.
+#[test]
+fn one_per_gene_is_the_main_transcript_or_the_best_one_where_it_does_not_reach() {
+    let gtf = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/hg002-revio/ncbiRefSeq.slices.gtf");
+    let a = Annotation::open(&gtf).unwrap();
+    let at = |pos: u64| -> Vec<String> {
+        let here = a.query("chr20", pos, pos + 1).filter(|t| t.start <= pos && pos < t.end);
+        one_per_gene(here).into_iter().filter(|t| &*t.gene_name == "GNAS").map(|t| without_copy_suffix(&t.id).to_owned()).collect()
+    };
+    // Inside the MANE transcript: that one, though a dozen others are there too.
+    assert_eq!(at(58_900_000), ["NM_000516.7"]);
+    // In the upstream exon it lacks (1-based 58,854,246): the curated coding transcript with
+    // the longest coding sequence, not a predicted XM_ model and not nothing.
+    assert_eq!(at(58_854_245), ["NM_080425.4"]);
+    assert!(!a.query("chr20", 58_854_245, 58_854_246).any(|t| t.representative && &*t.gene_name == "GNAS"));
+}

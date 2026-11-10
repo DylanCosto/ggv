@@ -52,19 +52,23 @@ impl App {
         fasta.fetch(&ggv_model::Region { contig, start: p, end: p + 1 }).ok()?.first().copied()
     }
 
-    /// Transcripts overlapping `[start, end)` on `contig` from the gene tracks (as drawn: one
-    /// per gene, or all), coding ones first, each once. Off the view (a variant's details
-    /// window left open) they come from the annotation itself.
+    /// Transcripts overlapping `[start, end)` on `contig` from the gene tracks, coding ones
+    /// first, each once: all of them, or one per gene as an agent's `evidence` names them (the
+    /// gene's main transcript, or where that one doesn't reach, its best one there, so a coding
+    /// exon the main transcript lacks is still a gene). Off the view (a variant's details window
+    /// left open) they come from the annotation itself.
     fn transcripts_over(&self, contig: &str, start: u64, end: u64) -> Vec<&Transcript> {
         let end = end.max(start + 1);
+        let overlaps = |t: &&Transcript| t.start < end && start < t.end;
         let mut out: Vec<&Transcript> = Vec::new();
         for g in &self.genes {
-            let here: Box<dyn Iterator<Item = &Transcript>> = match (&g.built, g.annotation()) {
-                (Some(b), _) if b.contig == contig && b.start <= start && end <= b.end => Box::new(b.items.iter()),
-                (_, Some(a)) => Box::new(a.query(contig, start, end).filter(|t| self.all_transcripts || t.representative)),
+            let here: Vec<&Transcript> = match (&g.built, g.annotation()) {
+                (Some(b), _) if self.all_transcripts && b.contig == contig && b.start <= start && end <= b.end => b.items.iter().filter(overlaps).collect(),
+                (_, Some(a)) if self.all_transcripts => a.query(contig, start, end).filter(overlaps).collect(),
+                (_, Some(a)) => ggv_annot::one_per_gene(a.query(contig, start, end).filter(overlaps)),
                 _ => continue,
             };
-            for t in here.filter(|t| t.start < end && start < t.end) {
+            for t in here {
                 if !out.iter().any(|x| x.id == t.id) {
                     out.push(t);
                 }
@@ -157,20 +161,21 @@ impl App {
     /// The evidence panel's genes at `pos`: transcript (without UCSC's copy suffix, as the
     /// consequences name it), exon or intron, and whether it is coding there.
     pub(super) fn genes_at(&self, pos: u64) -> Vec<String> {
-        let mut out = Vec::new();
-        for g in &self.genes {
-            let Some(built) = &g.built else { continue };
-            for t in built.items.iter().filter(|t| t.start <= pos && pos < t.end) {
+        let Some(contig) = self.contigs.get(self.contig).map(|c| c.name.clone()) else { return Vec::new() };
+        // The same transcripts the consequences are worked out for: where a gene's main
+        // transcript doesn't reach, its best one here, not nothing.
+        self.transcripts_over(&contig, pos, pos + 1)
+            .into_iter()
+            .map(|t| {
                 let exon = t.exons.iter().position(|&(s, e)| (s..e).contains(&pos)).map(|e| {
                     let n = t.exons.len();
                     if t.strand == Strand::Reverse { n - e } else { e + 1 }
                 });
                 let place = exon.map_or("intron".to_owned(), |e| format!("exon {e}/{}", t.exons.len()));
                 let coding = exon.is_some() && t.cds.is_some_and(|(s, e)| (s..e).contains(&pos));
-                out.push(format!("{} {}  {place}{}", t.gene_name, ggv_annot::without_copy_suffix(&t.id), if coding { ", coding" } else { "" }));
-            }
-        }
-        out
+                format!("{} {}  {place}{}", t.gene_name, ggv_annot::without_copy_suffix(&t.id), if coding { ", coding" } else { "" })
+            })
+            .collect()
     }
 
     /// For a gene tooltip: the base's `c.` position and, in a coding exon, its codon and amino

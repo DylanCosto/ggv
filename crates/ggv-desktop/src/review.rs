@@ -75,6 +75,9 @@ pub struct Review {
     pub record: Option<(usize, u64, usize)>,
     /// A Prev under way, which arrives at the last record at its base.
     pub back: bool,
+    /// Which records the review holds: all of them, or only those that passed (stepping skips
+    /// the rest, and a base's failed records are not counted among its records).
+    pub sites: crate::variants::Sites,
 }
 
 pub const EXT: &str = "ggv-review.tsv";
@@ -99,6 +102,7 @@ impl Review {
             notice: None,
             record: None,
             back: false,
+            sites: crate::variants::Sites::All,
         };
         if review.path.exists() {
             match crate::store::read_recovering(&review.path, parse) {
