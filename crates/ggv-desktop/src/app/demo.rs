@@ -30,7 +30,18 @@ const STEPS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The step whose button opens the command palette.
+/// The width the tour's text wraps to.
+const TOUR_WIDTH: f32 = 320.0;
+
+/// What step `k` says: its own text, or its stop's in the demo.
+fn step_text(k: usize) -> &'static str {
+    let text = STEPS[k].1;
+    if text.is_empty() { demo::STOPS[k].1 } else { text }
+}
+
+/// The step whose button opens the command palette. It and the step after it open something
+/// (the palette, a file dialog) instead of moving the view, so they do it on their button, not
+/// on arriving: Next used to put a file dialog in front of someone still reading the tour.
 const PALETTE_STEP: usize = 4;
 
 /// The tour window's distance from the window's right edge and from its bottom (clear of the
@@ -89,11 +100,20 @@ impl App {
         }
     }
 
+    /// Moves the tour to step `n`, showing its place when it has one (the steps before
+    /// [`PALETTE_STEP`]).
+    fn tour_go(&mut self, n: usize, ctx: &egui::Context) {
+        self.tour = Some(n);
+        if n < PALETTE_STEP {
+            self.tour_show(n, ctx);
+        }
+    }
+
     pub(super) fn tour_window(&mut self, ctx: &egui::Context) {
         let Some(k) = self.tour else { return };
         let k = k.min(STEPS.len() - 1);
-        let (title, text) = STEPS[k];
-        let text = if text.is_empty() { demo::STOPS[k].1 } else { text };
+        let title = STEPS[k].0;
+        let text = step_text(k);
         let mut open = true;
         let mut go = None;
         let mut show = false;
@@ -108,10 +128,19 @@ impl App {
             .collapsible(true)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.set_max_width(320.0);
+                ui.set_max_width(TOUR_WIDTH);
                 ui.label(RichText::new(format!("{} of {}  ·  {title}", k + 1, STEPS.len())).strong());
                 ui.add_space(4.0);
-                ui.label(text);
+                // Every step gets the room of the longest: the window is put by its bottom
+                // corner only as it first opens, and a later, longer step grew it down over the
+                // status bar.
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let color = ui.visuals().text_color();
+                let tallest = (0..STEPS.len()).map(|i| ui.painter().layout(step_text(i).to_owned(), font.clone(), color, TOUR_WIDTH).size().y).fold(0.0, f32::max);
+                ui.allocate_ui_with_layout(Vec2::new(TOUR_WIDTH, tallest), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.set_min_height(tallest);
+                    ui.label(text);
+                });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let label = match k {
@@ -135,8 +164,7 @@ impl App {
             self.tour_show(k, ctx);
         }
         if let Some(n) = go {
-            self.tour = Some(n);
-            self.tour_show(n, ctx);
+            self.tour_go(n, ctx);
         }
         if !open {
             self.tour = None;
@@ -179,5 +207,25 @@ impl App {
             ui.add_space(6.0);
             ui.label(RichText::new("Ctrl+K: every command  ·  ?: keyboard shortcuts").weak().small());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Next and Back only move the view: the palette and the file dialog wait for their button.
+    #[test]
+    fn arriving_at_a_step_opens_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, super::super::Args::default()).unwrap();
+        for n in PALETTE_STEP..STEPS.len() {
+            app.tour_go(n, &ctx);
+            assert_eq!(app.tour, Some(n));
+            assert!(app.palette.is_none() && app.dialog.is_none(), "step {} opened something on arrival", n + 1);
+        }
+        // Its button is what opens the palette.
+        app.tour_show(PALETTE_STEP, &ctx);
+        assert!(app.palette.is_some());
     }
 }

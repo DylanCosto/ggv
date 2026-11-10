@@ -128,6 +128,12 @@ pub(super) fn placed<'a>(ctx: &egui::Context, window: egui::Window<'a>, id: egui
     window.default_pos(left_top)
 }
 
+/// Has [`placed`] put the window `id` at its spot again the next time it is shown, as if it had
+/// never been open (for a window that would otherwise come back over what was just clicked).
+pub(super) fn place_again(ctx: &egui::Context, id: egui::Id) {
+    ctx.data_mut(|d| d.remove::<u8>(id.with("placed")));
+}
+
 impl Layout {
     /// The saved layout, with any section it lacks added at the end.
     pub fn load() -> Self {

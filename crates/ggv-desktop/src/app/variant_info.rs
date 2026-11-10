@@ -17,6 +17,9 @@ pub struct VariantPopup {
     pub var: Variant,
     pub fields: Arc<Vec<InfoField>>,
     pub samples: Vec<String>,
+    /// Where on screen the variant was clicked, when it was: the window first opens on the
+    /// pane's side away from it.
+    clicked_x: Option<f32>,
     /// "In the genes open here", and what it was computed from (see `popup_consequences`).
     pub(super) consequences: Option<(ConsequenceKey, Vec<String>)>,
 }
@@ -78,7 +81,26 @@ impl App {
         let Some(t) = self.variants.get(i) else { return };
         let contig = self.contigs.get(self.contig).map(|c| c.name.clone()).unwrap_or_default();
         self.variant_popup =
-            Some(VariantPopup { file: t.file_name(), contig, var, fields: t.info_fields.clone(), samples: t.samples.clone(), consequences: None });
+            Some(VariantPopup { file: t.file_name(), contig, var, fields: t.info_fields.clone(), samples: t.samples.clone(), clicked_x: None, consequences: None });
+    }
+
+    fn variant_window_id(&self) -> egui::Id {
+        // One per pane (two panes' windows don't collide).
+        egui::Id::unique(("variant details", self.reference_slot))
+    }
+
+    /// Shows `var` for a click on it at `at`, clear of that spot: the window first opens on the
+    /// pane's side away from the click, and one that would come back over it (where it was when
+    /// last closed) is placed again. One already open stays where it is.
+    pub(super) fn open_variant_popup_at(&mut self, i: usize, var: Variant, at: egui::Pos2) {
+        let reopening = self.variant_popup.is_none();
+        self.open_variant_popup(i, var);
+        let id = self.variant_window_id();
+        let Some(p) = &mut self.variant_popup else { return };
+        p.clicked_x = Some(at.x);
+        if reopening && self.egui_ctx.memory(|m| m.area_rect(id)).is_some_and(|last| last.contains(at)) {
+            super::inspector::place_again(&self.egui_ctx, id);
+        }
     }
 
     /// What the window's variant does to the genes open here: at its own contig and position,
@@ -113,11 +135,12 @@ impl App {
         let title = format!("{}:{}  {}", p.contig, commas(var.start + 1), var.kind());
         let text = self.variant_text(p, &consequences);
         let pane = self.pane_rect(ctx);
-        let spot = super::inspector::beside(pane, pane.left(), 300.0, ctx.content_rect());
+        // At its pane's top, on the side away from the variant clicked (the right, when it was
+        // opened some other way).
+        let spot = super::inspector::beside(pane, p.clicked_x.unwrap_or(pane.left()), 300.0, ctx.content_rect());
         let mut open = true;
         let mut copy = false;
-        // One per pane (two panes' windows don't collide), first shown at its own pane's top right.
-        let id = egui::Id::unique(("variant details", self.reference_slot));
+        let id = self.variant_window_id();
         super::inspector::placed(ctx, egui::Window::new(title), id, spot, self.pane_settled())
             .open(&mut open)
             .default_width(460.0)
@@ -172,11 +195,15 @@ impl App {
                         ui.label(egui::RichText::new(format!("and {} more samples", var.samples.len() - 20)).weak());
                     }
                 }
-                ui.separator();
-                ui.label(egui::RichText::new("INFO").strong());
+                // A record with no INFO (`.`) has no section, rather than a heading over nothing.
+                let info: Vec<(&str, &str)> = var.info_pairs().collect();
+                if !info.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("INFO").strong());
+                }
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                     egui::Grid::new("info").num_columns(2).striped(true).show(ui, |ui| {
-                        for (k, v) in var.info_pairs() {
+                        for (k, v) in info {
                             let desc = p.fields.iter().find(|f| f.id == k).map(|f| f.description.as_str()).unwrap_or("");
                             let key = ui.label(egui::RichText::new(k).monospace().strong());
                             if !desc.is_empty() {

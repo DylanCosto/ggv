@@ -3513,7 +3513,7 @@ impl App {
                 if self.review_track() == Some(i) {
                     self.review_pick(&var);
                 }
-                self.open_variant_popup(i, var);
+                self.open_variant_popup_at(i, var, p);
             }
             if matches!(hit, Some(Hit::Track(_)) | None) && !on_header && !self.contigs.is_empty() {
                 let base = (base_at(p, self)).min(self.contig_len().max(1.0) as u64 - 1);
