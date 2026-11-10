@@ -206,7 +206,7 @@ fn data_tools() -> Vec<Value> {
         tool(
             "reads",
             "Reads, grouped",
-            "Reads at a base or in a region (up to 100 kb), grouped by allele at the base (default for a base), strand, HP tag (haplotype), allele-based phase, or not at all. Each group: count, strands, median MAPQ, insert size, soft clips, and (at a base) median distance from the read end. Raw reads are listed only when `list` is given (at most 50 per group).",
+            "Reads at a base or in a region (up to 100 kb), grouped by allele at the base (default for a base), strand, HP tag (haplotype), allele-based phase (with a note when the reads fall into several phase blocks: A and B only match up within one), or not at all. Each group: count, strands, median MAPQ, insert size, soft clips, and (at a base) median distance from the read end. Raw reads are listed only when `list` is given (at most 50 per group).",
             schema(&[], &[locus, region.clone(), json!({"bam": {"type": "string"}, "reference": {"type": "string"}, "group_by": {"type": "string", "enum": ["allele", "strand", "haplotype", "phase", "none"]}, "list": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Raw reads to list per group (default 0)."}}), filter_schema()]),
         ),
         tool(
@@ -1688,6 +1688,11 @@ warning: {}", w.join("; ")) },
         });
         if let Some((p, _)) = &phasing {
             result["phase"] = json!({"het_sites": p.sites.len(), "blocks": p.blocks});
+            if p.blocks > 1 {
+                // The two groups hold every block's A and B, which are one haplotype each only
+                // within a block.
+                result["phase"]["note"] = json!("several phase blocks: A and B match up only within a block, so the groups are not one haplotype each across the region. `phase` gives each block's span and reads");
+            }
         }
         Ok(result)
     }

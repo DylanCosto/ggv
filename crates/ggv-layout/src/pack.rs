@@ -36,7 +36,9 @@ pub enum GroupBy {
     /// reference, then reads not covering it. Phases reads at a het site without `HP` tags.
     BaseAt(u64),
     /// Haplotype by the alleles reads carry at the heterozygous sites in the loaded span
-    /// (see [`crate::phase`]): phase A, phase B, then reads with no informative site.
+    /// (see [`crate::phase`]): phase A, phase B, then reads with no informative site. With
+    /// several phase blocks the two bands hold every block's A and B, which the labels say:
+    /// a band per block would be mostly empty, each block's reads lying under its own sites.
     Alleles,
     /// The value of this tag (`CB`, `PS`, `UB`...): the reads must be loaded with it
     /// (`ViewOptions::tag`). Reads without it come last.
@@ -206,7 +208,10 @@ pub fn pack_indices(reads: &[AlignedRead], mut order: Vec<usize>, opts: &PackOpt
                 label = match (rank, p.sites.len()) {
                     (2, 0) => "no het sites found (they need a reference)".into(),
                     (2, _) => label,
-                    (_, n) => format!("{label} · {n} het site{} · {} block{}", if n == 1 { "" } else { "s" }, p.blocks, if p.blocks == 1 { "" } else { "s" }),
+                    (_, n) if p.blocks == 1 => format!("{label} · {n} het site{} · 1 block", if n == 1 { "" } else { "s" }),
+                    // Said in the label: block 1's A and block 2's A are different haplotypes
+                    // as often as not, and the band holds both.
+                    (_, n) => format!("{label} · {n} het sites · {} blocks, A and B set per block", p.blocks),
                 };
             }
             packed.groups.push(Group { label, first_row: packed.rows.len(), rows: rows.len(), reads: members.len() });

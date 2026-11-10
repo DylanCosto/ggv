@@ -44,9 +44,8 @@ fn step_text(k: usize) -> &'static str {
 /// on arriving: Next used to put a file dialog in front of someone still reading the tour.
 const PALETTE_STEP: usize = 4;
 
-/// The tour window's distance from the window's right edge and from its bottom (clear of the
-/// status bar).
-const TOUR_MARGIN: Vec2 = Vec2::new(12.0, 40.0);
+/// The tour window's distance from the right and bottom edges of the tracks.
+const TOUR_MARGIN: Vec2 = Vec2::new(12.0, 12.0);
 
 impl App {
     /// Opens the demo at the tour's first stop, with the tour; downloads it first (once, in the
@@ -117,12 +116,22 @@ impl App {
         let mut open = true;
         let mut go = None;
         let mut show = false;
-        // Bottom right: the top right is where the panels it talks about open (Evidence, Variant
-        // review), the top is the tracks' headers, and the bottom left is where the gene track
-        // says what is there. Down here it is over the end of the side column, or, with none
-        // open, the last read rows' right end. It starts there and can be dragged away.
-        let spot = (ctx.content_rect().right_bottom() - TOUR_MARGIN, Align2::RIGHT_BOTTOM);
+        // At the tracks' bottom, where their right edge is with the side column open: clear of
+        // the column, whose panels (Evidence, Variant review) are what the steps talk about, of
+        // the tracks' headers at the top, and of the bottom left, where the gene track says
+        // what is there; and in the same place whether the column is open at a step or not, so
+        // Next stays under the pointer. It can be dragged away, and is put back when that
+        // corner moves (the window resized, the column widened or put below the tracks).
+        let pane = self.pane_rect(ctx);
+        let right = pane.right().min(ctx.content_rect().right() - super::SIDE_COLUMN).max(pane.left() + TOUR_WIDTH);
+        let spot = (egui::pos2(right, pane.bottom()) - TOUR_MARGIN, Align2::RIGHT_BOTTOM);
         let id = egui::Id::unique(("tour", self.reference_slot));
+        let corner = id.with("tracks-corner");
+        let before = ctx.data(|d| d.get_temp::<egui::Pos2>(corner));
+        if before.is_some_and(|b| b.distance(spot.0) > 1.0) {
+            super::inspector::place_again(ctx, id);
+        }
+        ctx.data_mut(|d| d.insert_temp(corner, spot.0));
         super::inspector::placed(ctx, egui::Window::new("Tour"), id, spot, self.pane_settled())
             .resizable(false)
             .collapsible(true)

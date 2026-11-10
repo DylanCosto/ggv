@@ -220,7 +220,8 @@ impl BamFile {
         let header = if is_cram(path) {
             cram::io::reader::Builder::default().build_from_path(path).at(path)?.read_header().at(path)?
         } else {
-            File::open(path).map(bam::io::Reader::new).at(path)?.read_header().at(path)?
+            let mut reader = File::open(path).map(bam::io::Reader::new).at(path)?;
+            reader.read_header().map_err(|cause| Error::NotAlignments { hint: other_kind(path), path: path.to_owned(), cause })?
         };
         Ok(info_of(path, "none".into(), &header))
     }

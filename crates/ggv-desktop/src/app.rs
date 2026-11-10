@@ -95,6 +95,8 @@ const MIN_READ_SPAN: f64 = 20_000.0;
 const SPAN_SLACK: u64 = 2;
 
 /// Shared rows above the tracks, in points from the canvas top.
+/// The side column's width when it first opens beside the tracks.
+const SIDE_COLUMN: f32 = 330.0;
 const RULER_H: f32 = 30.0;
 const REF_TOP: f32 = 32.0;
 const TRACKS_TOP: f32 = REF_TOP + REF_H + 4.0;
@@ -777,6 +779,30 @@ impl App {
                 Err(e) => self.error = Some(path_error(&path, format!("{e:#}"))),
             }
         }
+        self.genome_from_variants();
+    }
+
+    /// With nothing else to say what the genome is, a variant file's header does (its
+    /// `##contig` lines with lengths), so a VCF opened alone can be looked at. Alignments opened
+    /// later take over, as they do from an annotation.
+    fn genome_from_variants(&mut self) {
+        if !self.contigs.is_empty() || !self.tracks.is_empty() || self.pending_genome.is_some() || self.pending_reference.is_some() {
+            return;
+        }
+        let Some(contigs) = self.variants.iter().map(|v| v.header_contigs.clone()).find(|c| !c.is_empty()) else { return };
+        self.contigs = contigs;
+        self.contigs_from_annotation = true;
+        if self.pending_goto.is_none() {
+            self.pending_goto = self.contigs.first().map(|c| c.name.clone());
+        }
+    }
+
+    /// What to say on an empty canvas when files are open but none says what the genome is
+    /// (variant files whose headers give no contig lengths).
+    fn no_genome_hint(&self) -> Option<&'static str> {
+        let waiting = self.pending_genome.is_some() || self.pending_reference.is_some() || !self.indexing.is_empty() || !self.downloads.is_empty();
+        (self.contigs.is_empty() && !self.variants.is_empty() && self.tracks.is_empty() && self.genes.is_empty() && self.signals.is_empty() && !waiting)
+            .then_some("The variant files open here don't give their contigs' lengths (no ##contig lines with length=).\nOpen alignments, a gene annotation or a reference (Open) to see them.")
     }
 
     fn close_variants(&mut self, i: usize) {
@@ -1517,6 +1543,11 @@ impl App {
         if !missing_index(path) {
             return false;
         }
+        // A file named .bam that isn't one has no index to build (the offer ended in "failed
+        // to fill whole buffer"): opening it says what is wrong with it instead.
+        if path.to_string_lossy().to_ascii_lowercase().ends_with(".bam") && matches!(ggv_io::BamFile::header_info(path), Err(ggv_io::Error::NotAlignments { .. })) {
+            return false;
+        }
         if !self.indexing.iter().any(|j| j.path == path) {
             self.indexing.push(IndexJob { path: path.to_owned(), state: IndexState::Offered });
         }
@@ -1587,6 +1618,7 @@ impl App {
                 .filter(|c| !c.is_empty())
                 .or_else(|| self.reference_path.as_ref().and_then(|p| ggv_io::ReferenceFasta::open(p).ok()).map(|r| r.contigs().to_vec()).filter(|c| !c.is_empty()))
                 .or_else(|| self.signals.iter().map(|s| s.contigs()).find(|c| !c.is_empty()))
+                .or_else(|| self.variants.iter().map(|v| v.header_contigs.clone()).find(|c| !c.is_empty()))
                 .unwrap_or_default();
             self.contigs_from_annotation = !contigs.is_empty();
             self.set_genome(contigs);
@@ -2274,15 +2306,22 @@ impl App {
             // Beside the tracks when the pane has room for both (at most half of it, and the
             // tracks keep a readable width); in a narrower pane (a split view) below them at full
             // width instead, where the allele table and statistics stay readable and the tracks
-            // aren't squeezed to a strip between two panes. Either way it scrolls both ways
-            // rather than cutting off what doesn't fit.
+            // aren't squeezed to a strip between two panes. A pane too short to give the column
+            // its height and still show reads (a small window) keeps it beside. Either way it
+            // scrolls both ways rather than cutting off what doesn't fit.
             const MIN_SIDE: f32 = 300.0;
-            const SIDE: f32 = 330.0;
+            const SIDE: f32 = SIDE_COLUMN;
             /// Tracks narrower than this beside the column show a few hundred bases of reads
             /// and cut off their headers.
             const MIN_TRACKS_BESIDE: f32 = 520.0;
+            /// The least height the column takes below the tracks, and the least the tracks
+            /// need above it (variant tracks, coverage and a dozen read rows).
+            const MIN_BELOW: f32 = 220.0;
+            const MIN_TRACKS_ABOVE: f32 = 420.0;
             let width = ui.available_width();
-            if width * 0.5 >= MIN_SIDE && width - SIDE >= MIN_TRACKS_BESIDE {
+            let cramped_beside = width - SIDE < MIN_TRACKS_BESIDE;
+            let room_below = ui.available_height() - MIN_BELOW >= MIN_TRACKS_ABOVE;
+            if width * 0.5 >= MIN_SIDE && !(cramped_beside && room_below) {
                 // Text wraps to the panel (it scrolls only up and down); it can't be dragged
                 // narrower than its content can wrap to, so nothing is cut off.
                 egui::Panel::right(("evidence", self.reference_slot))
@@ -2296,7 +2335,7 @@ impl App {
                 let height = ui.available_height();
                 egui::Panel::bottom(("evidence-below", self.reference_slot))
                     .resizable(true)
-                    .default_size((height * 0.4).clamp(220.0, 360.0))
+                    .default_size((height * 0.4).clamp(MIN_BELOW, 360.0))
                     .max_size(height * 0.6)
                     .show(ui, |ui| {
                         self.column(ui);
@@ -2310,6 +2349,14 @@ impl App {
             // with no input after it left the locus box wrong until the next event.
             ui.ctx().request_repaint();
         }
+    }
+
+    /// The first track showing an error instead of its data, as `file: error`.
+    fn first_track_error(&self) -> Option<String> {
+        let alignments = self.tracks.iter().filter_map(|t| Some(path_error(std::path::Path::new(&t.file_name()), t.error.as_ref()?)));
+        let variants = self.variants.iter().filter_map(|v| Some(path_error(std::path::Path::new(&v.file_name()), v.error.as_ref()?)));
+        let signals = self.signals.iter().filter_map(|s| Some(path_error(std::path::Path::new(&s.file_name()), s.error.as_ref()?)));
+        alignments.chain(variants).chain(signals).next()
     }
 
     /// Scripted runs: `others_ready` says the other panes have finished loading too.
@@ -2333,6 +2380,9 @@ impl App {
             || (empty && !coming && self.automation.is_some())
             || (!self.tracks.is_empty() || !self.genes.is_empty() || !self.variants.is_empty() || !self.signals.is_empty())
             && requested
+            // A genome or track still downloading isn't on screen yet.
+            && self.downloads.is_empty()
+            && self.pending_genome.is_none()
             && self.signals.iter().all(|s| !s.is_loading())
             // A track that failed to load (a CRAM without its reference, a damaged file) has
             // settled too: waiting for it hung scripted screenshots and agents (it shows its error).
@@ -2405,6 +2455,13 @@ impl App {
                     && !crate::automation::failed()
                 {
                     crate::automation::fail(e);
+                }
+                // So does a track that shows an error in place of its data (a truncated BAM,
+                // a contig its reference lacks): the screenshot was written, of a failure.
+                if !crate::automation::failed()
+                    && let Some(e) = self.first_track_error()
+                {
+                    crate::automation::fail(&e);
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
             }
@@ -2874,6 +2931,9 @@ impl App {
         }
         if self.contigs.is_empty() {
             self.welcome(ui, rect);
+            if let Some(hint) = self.no_genome_hint() {
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, hint, FontId::proportional(13.0), self.pal().muted);
+            }
             return;
         }
 

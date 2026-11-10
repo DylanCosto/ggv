@@ -110,7 +110,8 @@ does. A transcript without introns shows its strand beside its name (`< SSA1`, `
 for the transcript id, biotype, exon count, coding length, tags, and which exon (numbered in the
 direction of transcription) is under the pointer. Double-click a gene to fit it in the view. Type a gene name, gene id or transcript id
 (`BRCA1`, `ENSG00000012048`, `ENST00000357654.9`) in the locus box to jump to it. With no BAM
-open, an annotation alone defines the genome.
+open, an annotation alone defines the genome, and so does a VCF or BCF whose header gives its
+contigs' lengths.
 
 Annotations over 4 MB are parsed once and cached (in `~/Library/Caches/ggv/annotations`,
 `$XDG_CACHE_HOME/ggv/annotations` or `%LOCALAPPDATA%\ggv\annotations`; `GGV_ANNOTATION_CACHE` names
@@ -209,7 +210,10 @@ every shortcut:
   alleles they carry at the heterozygous sites in the loaded span, for data without `HP` tags.
   Sites are found from the reads (one alternate base at 25–75%, depth ≥ 6), oriented left to
   right through reads that span two or more, and each read goes to the haplotype its alleles
-  vote for; the group labels give the site and block counts. Against phase from transmission in
+  vote for; the group labels give the site and block counts. With several blocks (sites no
+  read links), A and B are one haplotype each only within a block, and the labels say so. In
+  satellite and other repeats, where reads differ at hundreds of sites for reasons other than
+  the two haplotypes, the split is not reliable. Against phase from transmission in
   the HG002 trio (which uses no reads) it agrees on 100% of reads both place (HiFi and Illumina),
   in under 1 ms per load. Needs a reference (sites come from mismatches).
 - **Command palette** (Ctrl+K, or **Commands**): one fuzzy box for genes, loci, contigs,
@@ -351,6 +355,9 @@ frame with data takes about 0.8 s.
 Automation flags, for CI or checking a change: `--screenshot out.png` saves the real GPU frame
 once data has loaded (in every pane), then exits; `--bench` prints the table above, then exits;
 `--zoom-cycle` zooms all the way out and back in and reports each track's load state.
+A scripted run waits for a genome or track that is still downloading, and exits 1 when an
+error is showing or a track shows an error in place of its data (a truncated file, a contig
+its reference lacks).
 With split panes, scripted runs print where each pane ended up. They never overwrite the saved
 last session.
 
