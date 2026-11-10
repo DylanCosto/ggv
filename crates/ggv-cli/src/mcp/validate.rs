@@ -19,11 +19,53 @@ pub fn check(schema: &Value, args: &Value) -> Result<(), String> {
     }
     let props = &schema["properties"];
     for (k, v) in obj {
-        if let Some(s) = props.get(k) {
-            value(s, v, k)?;
+        match props.get(k) {
+            Some(s) => value(s, v, k)?,
+            // A misspelt `region` or `filter` would otherwise be dropped and the call answered
+            // for the default instead, with nothing to say so.
+            None => return Err(unknown_argument(k, props)),
         }
     }
     Ok(())
+}
+
+/// The refusal for an argument the tool doesn't take: the closest name it does take when one is
+/// near, and the whole list either way.
+fn unknown_argument(name: &str, props: &Value) -> String {
+    let known: Vec<&str> = props.as_object().into_iter().flat_map(|p| p.keys()).map(String::as_str).collect();
+    if known.is_empty() {
+        return format!("`{name}` is not an argument of this tool (it takes none)");
+    }
+    let nearest = known.iter().map(|k| (edit_distance(name, k), *k)).min().filter(|(d, k)| *d <= MAX_TYPO_DISTANCE.min(k.len() / 2));
+    let hint = nearest.map(|(_, k)| format!("; did you mean `{k}`?")).unwrap_or_default();
+    format!("`{name}` is not an argument of this tool{hint} (it takes {})", known.join(", "))
+}
+
+/// Edits (insert, delete, substitute, swap neighbours) within which an unknown argument name is
+/// taken for a typo of a known one.
+const MAX_TYPO_DISTANCE: usize = 2;
+
+/// Optimal string alignment distance between two short names.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in rows.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for j in 0..=b.len() {
+        rows[0][j] = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let substitution = rows[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            let mut best = substitution.min(rows[i - 1][j] + 1).min(rows[i][j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(rows[i - 2][j - 2] + 1);
+            }
+            rows[i][j] = best;
+        }
+    }
+    rows[a.len()][b.len()]
 }
 
 fn type_name(v: &Value) -> &'static str {
@@ -155,6 +197,17 @@ mod tests {
         assert!(check(&s, &json!({"region": "x", "track": 2})).is_ok());
         assert!(check(&s, &json!({"region": "x", "track": true})).is_err());
         assert!(check(&s, &json!({"region": "x", "min_mapq": null})).is_ok(), "null is left out");
-        assert!(check(&s, &json!({"region": "x", "other": [1]})).is_ok(), "keys the schema doesn't name are not checked");
+    }
+
+    #[test]
+    fn unknown_arguments_are_refused_with_the_nearest_name() {
+        let s = json!({"type": "object", "properties": {"region": {"type": "string"}, "filter": {"type": "string"}, "max": {"type": "integer"}}});
+        let typo = check(&s, &json!({"regoin": "chr1:1-10"})).unwrap_err();
+        assert!(typo.contains("`regoin` is not an argument") && typo.contains("did you mean `region`?"), "{typo}");
+        let far = check(&s, &json!({"colour_scheme": 1})).unwrap_err();
+        assert!(!far.contains("did you mean") && ["filter", "max", "region"].iter().all(|k| far.contains(k)), "{far}");
+        assert!(check(&s, &json!({"regoin": null})).is_err(), "an unknown name is refused even when null");
+        let none = check(&json!({"type": "object", "properties": {}}), &json!({"x": 1})).unwrap_err();
+        assert!(none.contains("it takes none"), "{none}");
     }
 }

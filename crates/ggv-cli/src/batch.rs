@@ -396,7 +396,7 @@ fn snapshot(b: &Batch, h: &mut Handles, ann: Option<&Annotation>, index: usize, 
                     sec.table.push(vec![
                         v.pos.to_string(),
                         v.ref_base.map_or(".".into(), |c| c.to_string()),
-                        v.alt.clone(),
+                        if v.length > 1 { format!("{} {} bp", v.alt, v.length) } else { v.alt.clone() },
                         format!("{:.0}", v.alt_fraction * 100.0),
                         format!("{} / {}", v.alt_fwd, v.alt_rev),
                         v.depth.to_string(),

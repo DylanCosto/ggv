@@ -233,7 +233,7 @@ fn junctions_refuse_a_reference_without_the_contig() {
     };
     assert!(run(&good).is_ok());
     let e = run(&partial).unwrap_err();
-    assert!(e.contains("chrQ") && e.contains("not in this file"), "{e}");
+    assert!(e.contains("chrQ") && e.contains("not in the reference ref2.fa"), "{e}");
 }
 
 #[test]
@@ -544,4 +544,31 @@ fn batch_summary_without_a_change_names_the_first_of_equal_genes() {
     let (o, tsv) = batch_genes(&d, "chrQ:150\tnochange\n", "t.txt", &[&bam], Some(&fa), Some(&genes), 1);
     assert_eq!((o.written, o.failed), (1, 0), "{tsv}");
     assert_eq!(rows(&tsv)[0][3], "AAA intron", "{tsv}");
+}
+
+#[test]
+fn index_builds_what_a_query_then_needs_and_other_files_are_not_bams() {
+    let d = Dir::new("index");
+    let r = bases(200);
+    let indexed = bam(&d, "reads.bam", &[("chrQ", 200)], &tiling("chrQ", &r));
+    let bare = d.file("bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    let copy = bare.join("reads.bam");
+    std::fs::copy(&indexed, &copy).unwrap();
+    let run = |args: &[&str]| crate::run(crate::Cli::try_parse_from(args).unwrap()).map_err(|e| format!("{e:#}"));
+    let p = copy.display().to_string();
+    let missing = run(&["ggv", "query", "pileup", &p, "chrQ:5"]).unwrap_err();
+    assert!(missing.contains("no index found") && missing.contains("`ggv index`"), "{missing}");
+    run(&["ggv", "index", &p]).unwrap();
+    assert!(copy.with_added_extension("bai").is_file());
+    run(&["ggv", "query", "pileup", &p, "chrQ:5"]).unwrap();
+    // Again is not an error, and a file of another kind is one (after the rest are done).
+    run(&["ggv", "index", &p]).unwrap();
+    let notes = d.file("notes.txt");
+    std::fs::write(&notes, "not sequence data").unwrap();
+    assert!(run(&["ggv", "index", &p, &notes.display().to_string()]).unwrap_err().contains("1 of 2 files"));
+    // A file that is no BAM is told so, whatever index it lacks.
+    let fa = fasta(&d, "ref.fa", &[("chrQ", &r)]);
+    let e = run(&["ggv", "info", &fa.display().to_string()]).unwrap_err();
+    assert!(e.contains("not a BAM file (it is named as a reference sequence)"), "{e}");
 }

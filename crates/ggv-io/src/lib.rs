@@ -56,6 +56,7 @@ pub fn resolve_locus(contigs: &[Contig], locus: &Locus) -> Result<Region> {
         .ok_or_else(|| Error::UnknownContig {
             name: locus.contig.clone(),
             examples: contigs.iter().take(5).map(|c| c.name.clone()).collect(),
+            file: None,
         })?;
 
     let start = locus.start.map_or(0, |s| s - 1);

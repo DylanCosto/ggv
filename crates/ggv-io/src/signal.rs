@@ -483,6 +483,16 @@ pub fn is_signal(name: &str) -> bool {
     [".bw", ".bigwig", ".bedgraph", ".bg", ".seg"].iter().any(|e| b.ends_with(e))
 }
 
+/// The failure to read `path` as bedGraph, for a file whose name doesn't say it is a signal track.
+fn not_a_signal(path: &Path, e: crate::Error) -> crate::Error {
+    let why = match e {
+        crate::Error::Io { cause, .. } => cause.to_string(),
+        other => other.to_string(),
+    };
+    let cause = std::io::Error::other(format!("not a signal track by its name (bigWig .bw/.bigwig, bedGraph .bedgraph/.bg, SEG .seg), and it doesn't read as bedGraph text: {why}"));
+    crate::Error::Io { path: path.to_owned(), cause }
+}
+
 impl Signal {
     pub fn open(path: &Path) -> crate::Result<Self> {
         let n = path.to_string_lossy().to_ascii_lowercase();
@@ -492,7 +502,9 @@ impl Signal {
         } else if b.ends_with(".seg") {
             Ok(Self::Seg(Seg::open(path)?))
         } else {
-            Ok(Self::BedGraph(BedGraph::open(path)?))
+            // Anything else is read as bedGraph text. When a file not named as a signal track
+            // fails to parse, the name is the likelier mistake than the line it failed on.
+            BedGraph::open(path).map(Self::BedGraph).map_err(|e| if is_signal(&n) { e } else { not_a_signal(path, e) })
         }
     }
 

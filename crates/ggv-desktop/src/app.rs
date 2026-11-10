@@ -1328,10 +1328,9 @@ impl App {
                     ui.label(format!("{} variable sites (≥20% non-reference, depth ≥8)", s.variable_site_count));
                     for v in &s.variable_sites {
                         ui.monospace(format!(
-                            "  {}  {}>{}  {:.0}%  ({}/{} fwd/rev, depth {})",
+                            "  {}  {}  {:.0}%  ({}/{} fwd/rev, depth {})",
                             commas(v.pos),
-                            v.ref_base.unwrap_or('.'),
-                            v.alt,
+                            v.change(),
                             v.alt_fraction * 100.0,
                             v.alt_fwd,
                             v.alt_rev,

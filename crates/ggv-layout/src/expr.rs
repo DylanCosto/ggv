@@ -22,7 +22,7 @@ pub const FIELDS: &[(&str, &str)] = &[
     ("dup, secondary, supplementary, qcfail", "flag tests"),
     ("paired, proper, read1, read2", "pairing flag tests"),
     ("mate_unmapped, mate_reverse, mate_elsewhere", "mate tests (elsewhere: other contig)"),
-    ("hp, rg  (or tag(HP), tag(RG))", "haplotype and read group tags"),
+    ("hp, rg  (or tag(HP), tag(RG))", "haplotype and read group tags; !hp: reads without one"),
     ("name", "read name; ~ tests containment: name ~ \"ccs\""),
     ("mismatches, deletions, insertions", "event counts (mismatches need a reference)"),
     ("clips, clip_left, clip_right", "soft-clipped bases"),

@@ -45,9 +45,9 @@ pub struct RepeatLengths {
     pub partial: u32,
     /// Reads that skip the repeat or a flank (`N` in the CIGAR, e.g. an intron): no evidence.
     pub skipping: u32,
-    /// One allele, or two split at the largest gap between read lengths, or one per haplotype
-    /// with the untagged reads that match neither as their own (two or more); every spanning
-    /// read is in one or in `unassigned`.
+    /// One allele per cluster of read lengths (unphased reads), or one per haplotype with the
+    /// untagged reads that match neither as their own (two or more); every spanning read is in
+    /// one or in `unassigned`.
     pub alleles: Vec<RepeatAllele>,
     /// Untagged reads of phased reads that fit no haplotype allele and are too few (one) to be
     /// an allele of their own.
@@ -171,9 +171,8 @@ fn allele(reads: &[&RepeatRead]) -> RepeatAllele {
 /// whose lengths they fall among; those that fit neither (a mosaic expansion, an expanded
 /// allele the tagger skipped) are split as unphased reads are, into allele(s) of their own,
 /// when there are two or more: one such read is a noisy outlier more often than an allele, and
-/// is counted as unassigned. Unphased reads give two alleles when the largest gap between
-/// sorted lengths is wider than 10% of the median (at least 3 bases) with two reads or more
-/// each side, else one.
+/// is counted as unassigned. Unphased reads are split by length (see [`best_split`]) into as many
+/// alleles as their lengths cluster into, each of two reads or more.
 fn alleles(reads: &[RepeatRead]) -> (Vec<RepeatAllele>, u32) {
     if reads.is_empty() {
         return (Vec::new(), 0);
@@ -206,15 +205,61 @@ fn alleles(reads: &[RepeatRead]) -> (Vec<RepeatAllele>, u32) {
     }
     let mut sorted: Vec<&RepeatRead> = reads.iter().collect();
     sorted.sort_by_key(|r| r.length);
-    let mid = sorted[sorted.len() / 2].length;
-    let gap = (2..sorted.len().saturating_sub(1))
-        .map(|i| (sorted[i].length - sorted[i - 1].length, i))
-        .max();
-    let out = match gap {
-        Some((g, i)) if g >= 3.max(mid / 10) => vec![allele(&sorted[..i]), allele(&sorted[i..])],
-        _ => vec![allele(&sorted)],
+    (clusters(&sorted), 0)
+}
+
+/// Two alleles are told apart when their medians differ by this many bases at least (or by a
+/// tenth of the reads' median length, if that is more).
+const MIN_ALLELE_SEPARATION: u64 = 3;
+
+/// Unphased reads (sorted by length) as alleles: split where two groups of two reads or more
+/// explain the lengths far better than one, and again inside each group.
+fn clusters(sorted: &[&RepeatRead]) -> Vec<RepeatAllele> {
+    match best_split(sorted) {
+        Some(i) => {
+            let mut out = clusters(&sorted[..i]);
+            out.extend(clusters(&sorted[i..]));
+            out
+        }
+        None => vec![allele(sorted)],
+    }
+}
+
+/// Where to cut sorted read lengths into two alleles, if anywhere: the cut that leaves the least
+/// spread around the two medians, among those with two reads or more each side whose medians are
+/// [`MIN_ALLELE_SEPARATION`] apart and that at least halve the spread around one median.
+///
+/// The largest gap alone is not enough: a pair of stray long reads opens the widest gap and
+/// would be called the second allele, with the real two (a few bases apart, joined by a noisy
+/// read or two) merged into the first.
+fn best_split(sorted: &[&RepeatRead]) -> Option<usize> {
+    let n = sorted.len();
+    if n < 4 {
+        return None;
+    }
+    let mut prefix = Vec::with_capacity(n + 1);
+    prefix.push(0u64);
+    for r in sorted {
+        prefix.push(prefix[prefix.len() - 1] + r.length);
+    }
+    let median_at = |from: usize, to: usize| from + (to - from) / 2;
+    // Sum of distances from the median of `sorted[from..to]`.
+    let spread = |from: usize, to: usize| {
+        let mid = median_at(from, to);
+        let m = sorted[mid].length;
+        let below = m * (mid - from) as u64 - (prefix[mid] - prefix[from]);
+        let above = (prefix[to] - prefix[mid]) - m * (to - mid) as u64;
+        below + above
     };
-    (out, 0)
+    let whole = spread(0, n);
+    let separation = MIN_ALLELE_SEPARATION.max(sorted[median_at(0, n)].length / 10);
+    (2..=n - 2)
+        .filter(|&i| sorted[i].length > sorted[i - 1].length)
+        .filter(|&i| sorted[median_at(i, n)].length - sorted[median_at(0, i)].length >= separation)
+        .map(|i| (spread(0, i) + spread(i, n), i))
+        .filter(|&(cost, _)| cost * 2 <= whole)
+        .min()
+        .map(|(_, i)| i)
 }
 
 /// Measures the repeat `[start, end)` (0-based) on `contig` in every read that spans it.
@@ -335,6 +380,23 @@ mod tests {
         assert_eq!(kept(&[r(60, 0), r(60, 0), r(61, 0), r(300, 0)]).len(), 1);
         // Phased and the same on both haplotypes: one allele.
         assert_eq!(kept(&[r(63, 1), r(63, 1), r(64, 2), r(63, 2)]).len(), 1);
+    }
+
+    #[test]
+    fn stray_long_reads_do_not_hide_two_close_alleles() {
+        // HTT in an unphased HG002 HiFi BAM: CAG tracts of 51 and 57 bases with three noisy reads
+        // between them, and two reads at 70-71. The widest gap is before the two long reads;
+        // the alleles are 51 and 57 (the read at 54, as near to either, goes with the later).
+        let lengths = [vec![51; 9], vec![52, 53, 54], vec![57; 15], vec![70, 71]].concat();
+        let reads: Vec<RepeatRead> = lengths.into_iter().map(|l| r(l, 0)).collect();
+        let a = kept(&reads);
+        assert_eq!(a.iter().map(|x| (x.length, x.reads, x.min, x.max)).collect::<Vec<_>>(), vec![(51, 11, 51, 53), (57, 16, 54, 57), (71, 2, 70, 71)]);
+        // One stray read is never an allele, however far away, nor are two beside a noisy one.
+        let one_stray: Vec<RepeatRead> = [vec![60; 20], vec![61, 300]].concat().into_iter().map(|l| r(l, 0)).collect();
+        assert_eq!(kept(&one_stray).len(), 1);
+        // Noise around one length stays one allele.
+        let noisy: Vec<RepeatRead> = [58, 59, 60, 60, 60, 61, 62].into_iter().map(|l| r(l, 0)).collect();
+        assert_eq!(kept(&noisy).len(), 1);
     }
 
     #[test]

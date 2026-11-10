@@ -45,17 +45,61 @@ pub struct RegionSummary {
     pub variable_sites: Vec<VariableSite>,
 }
 
+/// A variable position, or a run of adjacent positions deleted in enough reads, listed once.
 #[derive(Clone, Debug, Serialize)]
 pub struct VariableSite {
+    /// The position (1-based), or a deletion run's first deleted base.
     pub pos: u64,
+    /// The reference base at `pos`.
     #[serde(rename = "ref")]
     pub ref_base: Option<char>,
+    /// Depth, alt reads and fraction at the position; for a deletion run, at the base of the
+    /// run where the most reads carry the deletion.
     pub depth: u32,
     pub alt: String,
     pub alt_count: u32,
     pub alt_fwd: u32,
     pub alt_rev: u32,
     pub alt_fraction: f64,
+    /// Bases the site covers: 1, or the length of a deletion run.
+    #[serde(skip_serializing_if = "is_one")]
+    pub length: u64,
+}
+
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+fn is_one(n: &u64) -> bool {
+    *n == 1
+}
+
+/// The pileup's name for the deleted allele.
+const DELETION: &str = "DEL";
+
+impl VariableSite {
+    /// The change as people read it: `C>T`, `G>DEL` for one deleted base, `DEL 15 bp` for a run.
+    #[must_use]
+    pub fn change(&self) -> String {
+        if self.length > 1 { format!("{} {} bp", self.alt, self.length) } else { format!("{}>{}", self.ref_base.unwrap_or('.'), self.alt) }
+    }
+
+    fn is_deletion(&self) -> bool {
+        self.alt == DELETION
+    }
+
+    /// The position just past the site (1-based).
+    fn end(&self) -> u64 {
+        self.pos + self.length
+    }
+
+    /// Adds `next`, a deletion that starts where this one ends, keeping the counts of whichever
+    /// base more reads delete.
+    fn extend(&mut self, next: &VariableSite) {
+        debug_assert_eq!(self.end(), next.pos, "runs are extended by the adjacent site");
+        let length = self.length + next.length;
+        if next.alt_fraction > self.alt_fraction {
+            *self = VariableSite { pos: self.pos, ref_base: self.ref_base, ..next.clone() };
+        }
+        self.length = length;
+    }
 }
 
 /// The listed allele of a variable site: deep enough, and its share of the reads at least the
@@ -73,7 +117,35 @@ struct Parts {
     /// The most variable sites, already cut to the number asked for.
     variable: Vec<VariableSite>,
     variable_count: u64,
+    /// A deletion run that starts at the pass's first position, and one that ends at its last:
+    /// neither is in `variable` or counted yet, since the neighbouring pass may hold the rest.
+    head: Option<VariableSite>,
+    tail: Option<VariableSite>,
+    /// The head run reaches the pass's last position too (a deletion over the whole chunk).
+    head_reaches_end: bool,
     reads: ReadCounts,
+}
+
+impl Parts {
+    fn add(&mut self, site: VariableSite) {
+        self.variable_count += 1;
+        self.variable.push(site);
+    }
+
+    /// Files a finished site of the pass over `region`: at an edge when it is a deletion run
+    /// that may go on in the next pass, else in the list.
+    fn file(&mut self, site: VariableSite, region: &Region) {
+        if !site.is_deletion() {
+            self.add(site);
+        } else if site.pos == region.start + 1 {
+            self.head_reaches_end = site.end() == region.end + 1;
+            self.head = Some(site);
+        } else if site.end() == region.end + 1 {
+            self.tail = Some(site);
+        } else {
+            self.add(site);
+        }
+    }
 }
 
 fn top_sites(variable: &mut Vec<VariableSite>, max: usize) {
@@ -85,14 +157,16 @@ fn accumulate(bam: &mut BamFile, region: &Region, reference: Option<(&[u8], u64)
     let mut pileup_opts = opts.pileup.clone();
     pileup_opts.include_zero_depth = true;
     let mut p = Parts::default();
+    // The site still open: a deletion is one site however many bases it spans, so a deleted
+    // base right after the last one extends it instead of starting another.
+    let mut open: Option<VariableSite> = None;
     p.reads = crate::pileup::pileup_counting_from(bam, region, reference, &pileup_opts, count_from, |_| {}, |s: PositionStats| {
         *p.histogram.entry(s.depth).or_default() += 1;
         p.depth_sum += u64::from(s.depth);
         // The listed allele must pass on its own: a site whose non-reference reads are split
         // among several alleles, none of them common, is noise rather than a variant.
         if let Some(alt) = variable_alt(&s, opts) {
-            p.variable_count += 1;
-            p.variable.push(VariableSite {
+            let site = VariableSite {
                 pos: s.pos,
                 ref_base: s.ref_base,
                 depth: s.depth,
@@ -101,10 +175,22 @@ fn accumulate(bam: &mut BamFile, region: &Region, reference: Option<(&[u8], u64)
                 alt_fwd: alt.count.fwd,
                 alt_rev: alt.count.rev,
                 alt_fraction: alt.fraction,
-            });
+                length: 1,
+            };
+            match &mut open {
+                Some(run) if run.is_deletion() && site.is_deletion() && run.end() == site.pos => run.extend(&site),
+                _ => {
+                    if let Some(done) = open.replace(site) {
+                        p.file(done, region);
+                    }
+                }
+            }
         }
         Ok(())
     })?;
+    if let Some(done) = open {
+        p.file(done, region);
+    }
     top_sites(&mut p.variable, opts.max_variable_sites);
     Ok(p)
 }
@@ -118,6 +204,8 @@ fn parts(bam: &mut BamFile, region: &Region, reference: Option<&[u8]>, opts: &Su
     let reference = reference.map(|r| (r, region.start));
     let results = crate::chunks::run(bam, region, |b, chunk, count_from| accumulate(b, chunk, reference, opts, count_from))?;
     let mut total = Parts::default();
+    // A deletion run that reached the end of the passes so far: the next pass may continue it.
+    let mut carried: Option<VariableSite> = None;
     for p in results {
         for (d, c) in p.histogram {
             *total.histogram.entry(d).or_default() += c;
@@ -126,7 +214,24 @@ fn parts(bam: &mut BamFile, region: &Region, reference: Option<&[u8]>, opts: &Su
         total.variable.extend(p.variable);
         total.variable_count += p.variable_count;
         total.reads.merge(&p.reads);
+        let head = match (carried.take(), p.head) {
+            (Some(mut run), Some(head)) if run.end() == head.pos => {
+                run.extend(&head);
+                Some(run)
+            }
+            (before, head) => {
+                before.into_iter().for_each(|site| total.add(site));
+                head
+            }
+        };
+        if p.head_reaches_end {
+            carried = head;
+        } else {
+            head.into_iter().for_each(|site| total.add(site));
+            carried = p.tail;
+        }
     }
+    carried.into_iter().for_each(|site| total.add(site));
     top_sites(&mut total.variable, opts.max_variable_sites);
     Ok(total)
 }
@@ -137,7 +242,7 @@ pub fn summarize(
     reference: Option<&[u8]>,
     opts: &SummaryOptions,
 ) -> Result<RegionSummary> {
-    let Parts { histogram, depth_sum, mut variable, variable_count, reads } = parts(bam, region, reference, opts)?;
+    let Parts { histogram, depth_sum, mut variable, variable_count, reads, .. } = parts(bam, region, reference, opts)?;
     variable.sort_by_key(|v| v.pos);
 
     let n = region.len().max(1);
@@ -192,5 +297,32 @@ mod tests {
         assert!(variable_alt(&site(400, 2000), &opts).is_some());
         // An exact boundary still counts.
         assert!(variable_alt(&site(3, 10), &SummaryOptions { min_alt_fraction: 0.3, ..Default::default() }).is_some());
+    }
+
+    fn deletion(pos: u64, length: u64, alt_fraction: f64) -> VariableSite {
+        VariableSite { pos, ref_base: Some('A'), depth: 30, alt: DELETION.into(), alt_count: 20, alt_fwd: 10, alt_rev: 10, alt_fraction, length }
+    }
+
+    #[test]
+    fn a_deletion_run_is_one_site_with_its_deepest_base() {
+        let mut run = deletion(100, 1, 0.5);
+        run.extend(&deletion(101, 1, 0.8));
+        run.extend(&deletion(102, 1, 0.6));
+        assert_eq!((run.pos, run.length, run.end(), run.alt_fraction), (100, 3, 103, 0.8));
+        assert_eq!(run.change(), "DEL 3 bp");
+    }
+
+    #[test]
+    fn runs_at_a_pass_edge_wait_for_the_next_pass() {
+        // A pass over 0-based [100, 200): positions 101..=200.
+        let region = Region { contig: "c".into(), start: 100, end: 200 };
+        let mut p = Parts::default();
+        p.file(deletion(101, 5, 0.5), &region);
+        p.file(deletion(150, 5, 0.5), &region);
+        p.file(deletion(196, 5, 0.5), &region);
+        assert_eq!((p.head.as_ref().map(|s| s.pos), p.tail.as_ref().map(|s| s.pos), p.variable_count, p.head_reaches_end), (Some(101), Some(196), 1, false));
+        let mut whole = Parts::default();
+        whole.file(deletion(101, 100, 0.5), &region);
+        assert!(whole.head_reaches_end && whole.tail.is_none() && whole.variable_count == 0);
     }
 }

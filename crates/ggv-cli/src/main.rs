@@ -44,6 +44,16 @@ enum Command {
         #[arg(long, value_enum, default_value_t = Format::Tsv)]
         format: Format,
     },
+    /// Build the index a file lacks, next to it: BAM (.bai, or .csi when a contig is too long
+    /// for one), CRAM (.crai), bgzipped VCF (.tbi), FASTA (.fai, and .gzi when bgzipped). The
+    /// same indexes samtools and tabix write, and the desktop app offers to build.
+    Index {
+        #[arg(required = true, value_name = "FILE")]
+        files: Vec<PathBuf>,
+        /// Build the index again when the file already has one.
+        #[arg(long)]
+        force: bool,
+    },
     /// Ask questions about alignments; answers are data, not pictures.
     #[command(subcommand)]
     Query(Query),
@@ -306,7 +316,7 @@ enum Query {
         input: Input,
         #[command(flatten)]
         filters: Filters,
-        /// Also print positions no read covers.
+        /// Also print positions no read covers (a single base is always printed).
         #[arg(short = 'a', long)]
         all_positions: bool,
         /// Only print positions whose alt fraction is at least this.
@@ -558,6 +568,22 @@ fn run(mut cli: Cli) -> Result<()> {
                 }
             }
         }
+        Command::Index { files, force } => {
+            let mut failed = 0;
+            for file in &files {
+                match build_missing_index(file, force) {
+                    Ok(Indexed::Written(index)) => writeln!(out, "wrote {}", index.display())?,
+                    Ok(Indexed::AlreadyThere(index)) => writeln!(out, "{} is already there (--force builds it again)", index.display())?,
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("ggv: {e:#}");
+                    }
+                }
+            }
+            if failed > 0 {
+                anyhow::bail!("{failed} of {} files could not be indexed", files.len());
+            }
+        }
         Command::Demo => {
             let d = match ggv_io::demo::cached() {
                 Some(d) => d,
@@ -656,7 +682,10 @@ fn run(mut cli: Cli) -> Result<()> {
 
         Command::Query(Query::Pileup { input, filters, all_positions, min_alt_fraction, format }) => {
             let (mut bam, region, reference) = open(&input)?;
-            let opts = filters.options(all_positions && min_alt_fraction.is_none(), input.reference.as_deref());
+            // One base asked for by name is answered even when no read covers it: a row of
+            // zeros says so, where no row at all reads as a failed query.
+            let zero_depth = (all_positions || region.len() == 1) && min_alt_fraction.is_none();
+            let opts = filters.options(zero_depth, input.reference.as_deref());
             let keep = |s: &PositionStats| min_alt_fraction.is_none_or(|f| s.exact_alt_fraction() >= f);
 
             match format {
@@ -831,11 +860,11 @@ fn run(mut cli: Cli) -> Result<()> {
                         summary.variable_sites.len()
                     )?;
                     if !summary.variable_sites.is_empty() {
-                        writeln!(out, "#pos\tref\tdepth\talt\talt_count\talt_fwd\talt_rev\talt_fraction")?;
+                        writeln!(out, "#pos\tref\tdepth\talt\talt_count\talt_fwd\talt_rev\talt_fraction\tlength")?;
                         for v in &summary.variable_sites {
                             writeln!(
                                 out,
-                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                                 v.pos,
                                 v.ref_base.unwrap_or('.'),
                                 v.depth,
@@ -843,7 +872,8 @@ fn run(mut cli: Cli) -> Result<()> {
                                 v.alt_count,
                                 v.alt_fwd,
                                 v.alt_rev,
-                                v.alt_fraction
+                                v.alt_fraction,
+                                v.length
                             )?;
                         }
                     }
@@ -967,6 +997,29 @@ fn render(args: &RenderArgs) -> Result<()> {
 }
 
 /// Opens an alignment file, warning on stderr when it looks cut short.
+/// What `ggv index` did for one file.
+enum Indexed {
+    Written(PathBuf),
+    AlreadyThere(PathBuf),
+}
+
+/// Builds `file`'s index unless it has one (`force` builds it regardless).
+fn build_missing_index(file: &std::path::Path, force: bool) -> Result<Indexed> {
+    let kind = ggv_io::index_kind(file).ok_or_else(|| anyhow::anyhow!("{}: ggv indexes BAM, CRAM, bgzipped VCF (.vcf.gz) and FASTA files, told by their names", file.display()))?;
+    if !file.is_file() {
+        anyhow::bail!("{}: no such file", file.display());
+    }
+    // Where an index of this kind may already sit: `x.bam.bai`, a `.csi` in its place, `x.bai`.
+    let mut places = vec![file.with_added_extension(kind), file.with_extension(kind)];
+    if matches!(kind, "bai" | "tbi") {
+        places.push(file.with_added_extension("csi"));
+    }
+    if !force && let Some(found) = places.into_iter().find(|p| p.is_file()) {
+        return Ok(Indexed::AlreadyThere(found));
+    }
+    Ok(Indexed::Written(ggv_io::build_index(file)?))
+}
+
 pub(crate) fn open_bam(path: &std::path::Path, reference: Option<&std::path::Path>) -> Result<BamFile> {
     let bam = BamFile::open_with_reference(path, reference)?;
     if let Some(w) = bam.warning()
