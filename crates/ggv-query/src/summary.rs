@@ -109,6 +109,33 @@ fn variable_alt<'a>(s: &'a PositionStats, opts: &SummaryOptions) -> Option<&'a c
     (s.depth >= opts.min_variable_depth && s.depth > 0 && f64::from(alt.count.total) / f64::from(s.depth) >= opts.min_alt_fraction).then_some(alt)
 }
 
+/// The variable sites at one position: the deletion there when enough reads carry it, and the
+/// most common other allele when it passes too.
+///
+/// The deletion is kept apart from the top allele so that a long deletion stays one run: where
+/// the reads without it carry a common mismatch, that base outnumbers the deletion and was the
+/// only site listed, cutting a 6.8 kb heterozygous deletion into 28 rows. Both are listed there
+/// now, the deletion as part of its run.
+fn sites_at(s: &PositionStats, opts: &SummaryOptions) -> (Option<VariableSite>, Option<VariableSite>) {
+    let site = |allele: &str, count: &crate::StrandCount| VariableSite {
+        pos: s.pos,
+        ref_base: s.ref_base,
+        depth: s.depth,
+        alt: allele.to_owned(),
+        alt_count: count.total,
+        alt_fwd: count.fwd,
+        alt_rev: count.rev,
+        alt_fraction: (f64::from(count.total) / f64::from(s.depth.max(1)) * 1000.0).round() / 1000.0,
+        length: 1,
+    };
+    let passes = |count: u32| s.depth >= opts.min_variable_depth && s.depth > 0 && f64::from(count) / f64::from(s.depth) >= opts.min_alt_fraction;
+    let deletion = passes(s.deletions.total).then(|| site(DELETION, &s.deletions));
+    // The listed allele must pass on its own: a site whose non-reference reads are split
+    // among several alleles, none of them common, is noise rather than a variant.
+    let other = variable_alt(s, opts).filter(|alt| alt.allele != DELETION).map(|alt| site(alt.allele, &alt.count));
+    (deletion, other)
+}
+
 /// What one pass over (part of) a region adds up.
 #[derive(Default)]
 struct Parts {
@@ -132,12 +159,11 @@ impl Parts {
         self.variable.push(site);
     }
 
-    /// Files a finished site of the pass over `region`: at an edge when it is a deletion run
-    /// that may go on in the next pass, else in the list.
+    /// Files a finished deletion run of the pass over `region`: at an edge when it may go on in
+    /// the next pass, else in the list.
     fn file(&mut self, site: VariableSite, region: &Region) {
-        if !site.is_deletion() {
-            self.add(site);
-        } else if site.pos == region.start + 1 {
+        debug_assert!(site.is_deletion(), "other sites are added as they are met");
+        if site.pos == region.start + 1 {
             self.head_reaches_end = site.end() == region.end + 1;
             self.head = Some(site);
         } else if site.end() == region.end + 1 {
@@ -157,34 +183,23 @@ fn accumulate(bam: &mut BamFile, region: &Region, reference: Option<(&[u8], u64)
     let mut pileup_opts = opts.pileup.clone();
     pileup_opts.include_zero_depth = true;
     let mut p = Parts::default();
-    // The site still open: a deletion is one site however many bases it spans, so a deleted
-    // base right after the last one extends it instead of starting another.
+    // The deletion run still open: a deletion is one site however many bases it spans, so a
+    // deleted base right after the last one extends it instead of starting another.
     let mut open: Option<VariableSite> = None;
     p.reads = crate::pileup::pileup_counting_from(bam, region, reference, &pileup_opts, count_from, |_| {}, |s: PositionStats| {
         *p.histogram.entry(s.depth).or_default() += 1;
         p.depth_sum += u64::from(s.depth);
-        // The listed allele must pass on its own: a site whose non-reference reads are split
-        // among several alleles, none of them common, is noise rather than a variant.
-        if let Some(alt) = variable_alt(&s, opts) {
-            let site = VariableSite {
-                pos: s.pos,
-                ref_base: s.ref_base,
-                depth: s.depth,
-                alt: alt.allele.to_owned(),
-                alt_count: alt.count.total,
-                alt_fwd: alt.count.fwd,
-                alt_rev: alt.count.rev,
-                alt_fraction: alt.fraction,
-                length: 1,
-            };
-            match &mut open {
-                Some(run) if run.is_deletion() && site.is_deletion() && run.end() == site.pos => run.extend(&site),
-                _ => {
-                    if let Some(done) = open.replace(site) {
-                        p.file(done, region);
-                    }
+        let (deletion, other) = sites_at(&s, opts);
+        match (&mut open, deletion) {
+            (Some(run), Some(site)) if run.end() == site.pos => run.extend(&site),
+            (_, deletion) => {
+                if let Some(done) = std::mem::replace(&mut open, deletion) {
+                    p.file(done, region);
                 }
             }
+        }
+        if let Some(site) = other {
+            p.add(site);
         }
         Ok(())
     })?;
@@ -310,6 +325,29 @@ mod tests {
         run.extend(&deletion(102, 1, 0.6));
         assert_eq!((run.pos, run.length, run.end(), run.alt_fraction), (100, 3, 103, 0.8));
         assert_eq!(run.change(), "DEL 3 bp");
+    }
+
+    /// A base the intact reads mismatch at, inside a heterozygous deletion: the mismatch is the
+    /// top allele, and the deletion is still seen, so its run isn't cut there.
+    #[test]
+    fn a_deletion_under_a_commoner_mismatch_is_still_a_deletion_site() {
+        let at = |top: (&'static str, u32), deleted: u32| PositionStats {
+            pos: 500,
+            depth: 33,
+            deletions: StrandCount { total: deleted, fwd: deleted, rev: 0 },
+            top_alt: Some(AltAllele { allele: top.0, count: StrandCount { total: top.1, fwd: top.1, rev: 0 }, fraction: 0.0 }),
+            ..Default::default()
+        };
+        let opts = SummaryOptions::default();
+        let (deletion, other) = sites_at(&at(("A", 15), 11), &opts);
+        assert_eq!(deletion.map(|d| (d.alt, d.alt_count, d.alt_fraction)), Some((DELETION.to_owned(), 11, 0.333)));
+        assert_eq!(other.map(|o| (o.alt, o.alt_count)), Some(("A".to_owned(), 15)));
+        // The deletion as the top allele is one site, not two.
+        let (deletion, other) = sites_at(&at((DELETION, 11), 11), &opts);
+        assert!(deletion.is_some() && other.is_none());
+        // Too few reads delete the base: only the mismatch.
+        let (deletion, other) = sites_at(&at(("A", 15), 3), &opts);
+        assert!(deletion.is_none() && other.is_some());
     }
 
     #[test]

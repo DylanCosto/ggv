@@ -9,7 +9,8 @@ ggv query summary sample.bam chr7:55191000-55192000 -f ref.fa --format json
 
 A single base always gets a row from `query pileup`, at depth 0 when no read covers it; a
 region lists covered positions only unless `-a` is given. In `query summary`, a run of bases
-deleted in enough reads is one variable site with its `length`, not one per base.
+deleted in enough reads is one variable site with its `length`, not one per base; a base in it
+where the other reads carry a commoner mismatch is listed as well, without cutting the run.
 
 A file without an index gets one from `ggv index` (BAM `.bai`, or `.csi` when a contig is too
 long for one; CRAM `.crai`; bgzipped VCF `.tbi`; FASTA `.fai`, and `.gzi` when bgzipped), written
