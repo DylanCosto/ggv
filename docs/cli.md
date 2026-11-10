@@ -7,6 +7,19 @@ ggv query pileup  sample.bam chr7:55191000-55192000 --min-alt-fraction 0.2
 ggv query summary sample.bam chr7:55191000-55192000 -f ref.fa --format json
 ```
 
+A single base always gets a row from `query pileup`, at depth 0 when no read covers it; a
+region lists covered positions only unless `-a` is given. In `query summary`, a run of bases
+deleted in enough reads is one variable site with its `length`, not one per base; a base in it
+where the other reads carry a commoner mismatch is listed as well, without cutting the run.
+
+A file without an index gets one from `ggv index` (BAM `.bai`, or `.csi` when a contig is too
+long for one; CRAM `.crai`; bgzipped VCF `.tbi`; FASTA `.fai`, and `.gzi` when bgzipped), written
+next to the file as samtools and tabix would:
+
+```sh
+ggv index sample.bam calls.vcf.gz ref.fa     # --force builds one again
+```
+
 ```sh
 ggv render sample.bam chr7:55,191,822 -f ref.fa -o snv.png            # ±50 bp, base outlined
 ggv render sample.bam chr7:55191000-55241000 -f ref.fa -o view.svg    # SVG, real text
@@ -53,3 +66,7 @@ depth, breadth at 1/10/20/30×, and the most variable sites.
 
 Defaults count what IGV shows: unmapped, secondary, QC-fail and duplicate reads are dropped
 (`--exclude-flags 0x704`), no MAPQ or base-quality floor, overlapping mates both count.
+
+Without a reference (`-f` or `--genome`), `alt_fraction`, `top_alt` and a summary's variable
+sites compare each position with its most common allele, so a homozygous variant is not
+reported as one. `query pileup` and `query summary` say so on stderr.

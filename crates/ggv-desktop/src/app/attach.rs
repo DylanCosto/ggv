@@ -357,8 +357,9 @@ impl App {
                     None => self.here()?,
                 };
                 let note = text("note").unwrap_or("").to_owned();
+                // Shown as its band on the ruler: the Bookmarks window stays as the person has
+                // it (opening it for every bookmark an agent adds covered the panels).
                 crate::bookmarks::add(&mut self.bookmarks.borrow_mut(), crate::bookmarks::Bookmark { contig, start, end, note });
-                self.show_bookmarks = true;
             }
             "remove" => {
                 let mut list = self.bookmarks.borrow_mut();

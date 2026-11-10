@@ -25,11 +25,11 @@ or, for clients configured with JSON:
 | `coverage` | binned depth, counted up to 5 Mb and estimated from the index beyond (a whole chromosome in about 25 ms) |
 | `variants`, `genes` | VCF records with genotypes; transcripts by region or by gene name/ID |
 | `consequence` | HGVS `c.`/`p.` and effect of any REF→ALT (substitutions, and indels as `del`/`dup`/`ins`/`delins`/`fs` at the protein level too), with a warning if REF doesn't match the reference |
-| `phase` | haplotypes from the reads' own alleles: sites, blocks, reads per haplotype, which allele each carries |
+| `phase` | haplotypes from the reads' own alleles: blocks, reads per haplotype, and for the first `max_sites` sites (default 50; `het_sites` counts them all) which allele each carries |
 | `svs` | structural variants (≥ 50 bp) in a region (≤ 2 Mb) against the reads: each VCF record (sequence-resolved or symbolic) with, per file, supporting reads (a CIGAR deletion/insertion of about its size near the breakpoint, or a split alignment across it), reference reads, reads with another allele there, clipped reads, allele fraction, a genotype from the reads, and all of it by HP tag; plus clusters of large events in the reads that no record explains. On HG002 ONT against the T2T Q100 truth, the reads' genotype matched 34 of 54 SVs in ordinary regions, most of the rest being one SV listed once per haplotype (flagged as `same_site`) |
-| `repeats` | tandem repeat lengths in the reads (e.g. HTT CAG, FMR1 CGG, VNTRs): each read spanning the repeat with flank gives its length; alleles by haplotype when reads are phased, else split at the largest gap, with range, reads, HP split, change from the reference and motif copies. HG002 ONT agrees with TRGT-style calls at 35 of 35 chr17 loci tested and at HTT (87 and 108 bp) |
+| `repeats` | tandem repeat lengths in the reads (e.g. HTT CAG, FMR1 CGG, VNTRs): each read spanning the repeat with flank gives its length; alleles by haplotype when reads are phased, else one per cluster of read lengths (two reads or more each, so two stray long reads don't pass for an allele), with range, reads, HP split, change from the reference and motif copies; a `warning` when more reads were set aside as partial than measured (a region narrower than the repeat tract). HG002 ONT agrees with TRGT-style calls at 35 of 35 chr17 loci tested and at HTT (87 and 108 bp) |
 | `junctions` | RNA-seq splice junctions in a region (≤ 10 Mb) or gene, every file side by side: intron, length, strand and motif (from the reference), known or novel (novel donor, novel acceptor, novel combination of known sites) with its genes, and per file reads, unique reads and the junction's share of its donor's and acceptor's reads |
-| `compare` | positions where an allele's fraction differs between two files (tumor/normal) by more than the threshold |
+| `compare` | positions where an allele's fraction differs between two files (tumor/normal) by more than the threshold; `a_filters` / `b_filters` give each file its own read filters (one file's `hp == 1` reads against its `hp == 2`) |
 | `render` | a PNG, for clients that can see images or to show a person |
 | `signal` | binned values of bigWig / bedGraph / SEG tracks (mean, min, max; per SEG sample) |
 
@@ -46,7 +46,16 @@ predicted) and say how many others there were; `transcripts: "all"` lists every 
 leaves annotations out. Open files are
 kept between calls and annotations parsed once; on the HG002 fixtures every call takes 0–26 ms.
 Errors come back as tool results the model can read (`contig chr99 is not in this file (it has
-e.g. chr20)`), not protocol failures.
+e.g. chr20)`), not protocol failures. An argument a tool doesn't take is one of them
+(`` `regoin` is not an argument of this tool; did you mean `region`? ``): a misspelt name is
+never dropped and the call answered for the default. Every data tool takes `bams` (or `bam`),
+`reference` and `genes` to say which files it reads.
+
+Without a reference, `evidence` and `summarize` carry a `no_reference` note: alleles can then
+only be compared with the most common one at each position, which may itself be the variant.
+
+A REF or ALT over 60 bases (a structural variant written out) is given as its first 20 and its
+length, with `ref_length` / `alt_lengths` beside it.
 
 ## Attached to the app
 
@@ -89,7 +98,7 @@ keys, each returning what changed or an error that says why nothing did:
 |---|---|
 | `review` | Variant triage: `start` a VCF, `decide` the current site real / artifact / unsure with a `note`, `note`, `next`, `prev`, `stop`; without an action, every VCF's decisions and the current site |
 | `queue` | A review queue: `open` a list file or `paste` loci, `decide` pass / fail / unsure with a note, `next`, `prev`, `next_undecided`, `go` to an item, `export` as BED or TSV, `stop` |
-| `panes` | Split view: `split` at a locus, `close`, `activate` a pane, `link` panes to scroll together |
+| `panes` | Split view: `split` at a locus, `close`, `activate` a pane, `link` panes to scroll together. A pane still on its way to its locus has `region` null and `going_to` |
 | `action` | Any of the window's own actions by name (`back`, `forward`, `next_variant`, `next_diff`, `toggle_evidence`, `clear_selection`, `reload_all`, `copy_fasta`, `color:strand`…); without a name, the list. Actions that need a file dialog are refused in favour of the tools that take a path |
 | `rows` | Scroll an alignment track's read rows (as the person does with the wheel or scrollbar over rows that don't fit, by dragging, or with ↑/↓, PageUp/PageDown): to a `row`, `by` some rows, `to` top or bottom, to the row holding a named `read` (outlined), or to a `group`; without one, each track's row count, the rows on screen and its groups |
 | `search` | The window's sequence search: `start` (sequence, mismatches, scope), progress and hits, `go` to a hit, `stop` |

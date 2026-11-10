@@ -95,6 +95,8 @@ const MIN_READ_SPAN: f64 = 20_000.0;
 const SPAN_SLACK: u64 = 2;
 
 /// Shared rows above the tracks, in points from the canvas top.
+/// The side column's width when it first opens beside the tracks.
+const SIDE_COLUMN: f32 = 330.0;
 const RULER_H: f32 = 30.0;
 const REF_TOP: f32 = 32.0;
 const TRACKS_TOP: f32 = REF_TOP + REF_H + 4.0;
@@ -777,6 +779,30 @@ impl App {
                 Err(e) => self.error = Some(path_error(&path, format!("{e:#}"))),
             }
         }
+        self.genome_from_variants();
+    }
+
+    /// With nothing else to say what the genome is, a variant file's header does (its
+    /// `##contig` lines with lengths), so a VCF opened alone can be looked at. Alignments opened
+    /// later take over, as they do from an annotation.
+    fn genome_from_variants(&mut self) {
+        if !self.contigs.is_empty() || !self.tracks.is_empty() || self.pending_genome.is_some() || self.pending_reference.is_some() {
+            return;
+        }
+        let Some(contigs) = self.variants.iter().map(|v| v.header_contigs.clone()).find(|c| !c.is_empty()) else { return };
+        self.contigs = contigs;
+        self.contigs_from_annotation = true;
+        if self.pending_goto.is_none() {
+            self.pending_goto = self.contigs.first().map(|c| c.name.clone());
+        }
+    }
+
+    /// What to say on an empty canvas when files are open but none says what the genome is
+    /// (variant files whose headers give no contig lengths).
+    fn no_genome_hint(&self) -> Option<&'static str> {
+        let waiting = self.pending_genome.is_some() || self.pending_reference.is_some() || !self.indexing.is_empty() || !self.downloads.is_empty();
+        (self.contigs.is_empty() && !self.variants.is_empty() && self.tracks.is_empty() && self.genes.is_empty() && self.signals.is_empty() && !waiting)
+            .then_some("The variant files open here don't give their contigs' lengths (no ##contig lines with length=).\nOpen alignments, a gene annotation or a reference (Open) to see them.")
     }
 
     fn close_variants(&mut self, i: usize) {
@@ -807,7 +833,9 @@ impl App {
         } else {
             self.contigs[..=self.contig].iter().rev().map(pair).collect()
         };
-        self.variants[i].seek(contigs, from, forward, &mut self.next_request_id);
+        // Stepping through the reviewed track stops where the review does.
+        let sites = self.review.as_ref().filter(|_| self.review_track() == Some(i)).map_or(crate::variants::Sites::All, |r| r.sites);
+        self.variants[i].seek(contigs, from, forward, sites, &mut self.next_request_id);
     }
 
     /// Centres a found variant and outlines it, zooming in to read level if the view is wide.
@@ -932,7 +960,8 @@ impl App {
     fn review_records(&self) -> Option<((usize, u64), Vec<&ggv_io::Variant>, usize)> {
         let (c, pos) = self.highlight.filter(|(c, _)| *c == self.contig)?;
         let v = self.variants.get(self.review_track()?)?;
-        let here: Vec<&ggv_io::Variant> = v.current.as_ref()?.variants.iter().filter(|x| x.start == pos).collect();
+        let sites = self.review.as_ref()?.sites;
+        let here: Vec<&ggv_io::Variant> = v.current.as_ref()?.variants.iter().filter(|x| x.start == pos && sites.has(x)).collect();
         let last = here.len().checked_sub(1)?;
         let k = self.review.as_ref()?.record.filter(|r| (r.0, r.1) == (c, pos)).map_or(0, |r| r.2.min(last));
         Some(((c, pos), here, k))
@@ -971,7 +1000,8 @@ impl App {
     /// A record clicked in the reviewed track: the review goes to it.
     fn review_pick(&mut self, var: &ggv_io::Variant) {
         let Some(v) = self.review_track().and_then(|i| self.variants.get(i)) else { return };
-        let k = v.current.as_ref().and_then(|c| c.variants.iter().filter(|x| x.start == var.start).position(|x| x.reference == var.reference && x.alts == var.alts));
+        let sites = self.review.as_ref().map_or(crate::variants::Sites::All, |r| r.sites);
+        let k = v.current.as_ref().and_then(|c| c.variants.iter().filter(|x| x.start == var.start && sites.has(x)).position(|x| x.reference == var.reference && x.alts == var.alts));
         self.highlight = Some((self.contig, var.start));
         if let Some(r) = &mut self.review {
             r.record = Some((self.contig, var.start, k.unwrap_or(0)));
@@ -1057,6 +1087,14 @@ impl App {
             }
         }
         ui.add(egui::TextEdit::singleline(&mut review.note).hint_text("note (optional)").desired_width(260.0));
+        let mut passing = review.sites == crate::variants::Sites::Passing;
+        if ui
+            .checkbox(&mut passing, "Passing sites only")
+            .on_hover_text("Next and Prev skip records whose FILTER isn't PASS (the RefCall and LowQual records a caller writes beside its calls)")
+            .changed()
+        {
+            review.sites = if passing { crate::variants::Sites::Passing } else { crate::variants::Sites::All };
+        }
         ui.horizontal(|ui| {
             use crate::review::Label;
             for (label, key) in [(Label::Real, "1"), (Label::Artifact, "2"), (Label::Unsure, "3")] {
@@ -1238,7 +1276,10 @@ impl App {
                 ui.label(format!("soft clips starting {} / ending {} · ref skips {}", s.soft_clipped_left, s.soft_clipped_right, s.ref_skips));
             }
             if let Some(alt) = &s.top_alt {
-                ui.label(format!("top alt {} at {:.1}% ({} fwd / {} rev){}", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+                ui.label(format!("{} {} at {:.1}% ({} fwd / {} rev){}", top_alt_label(s), alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+            }
+            if !s.has_reference_base() {
+                ui.label(egui::RichText::new(NO_REFERENCE_BASE).color(warning_rgb(ui.visuals().dark_mode)));
             }
         }
         if let Some(text) = copy {
@@ -1328,10 +1369,9 @@ impl App {
                     ui.label(format!("{} variable sites (≥20% non-reference, depth ≥8)", s.variable_site_count));
                     for v in &s.variable_sites {
                         ui.monospace(format!(
-                            "  {}  {}>{}  {:.0}%  ({}/{} fwd/rev, depth {})",
+                            "  {}  {}  {:.0}%  ({}/{} fwd/rev, depth {})",
                             commas(v.pos),
-                            v.ref_base.unwrap_or('.'),
-                            v.alt,
+                            v.change(),
                             v.alt_fraction * 100.0,
                             v.alt_fwd,
                             v.alt_rev,
@@ -1506,6 +1546,11 @@ impl App {
         if !missing_index(path) {
             return false;
         }
+        // A file named .bam that isn't one has no index to build (the offer ended in "failed
+        // to fill whole buffer"): opening it says what is wrong with it instead.
+        if path.to_string_lossy().to_ascii_lowercase().ends_with(".bam") && matches!(ggv_io::BamFile::header_info(path), Err(ggv_io::Error::NotAlignments { .. })) {
+            return false;
+        }
         if !self.indexing.iter().any(|j| j.path == path) {
             self.indexing.push(IndexJob { path: path.to_owned(), state: IndexState::Offered });
         }
@@ -1576,6 +1621,7 @@ impl App {
                 .filter(|c| !c.is_empty())
                 .or_else(|| self.reference_path.as_ref().and_then(|p| ggv_io::ReferenceFasta::open(p).ok()).map(|r| r.contigs().to_vec()).filter(|c| !c.is_empty()))
                 .or_else(|| self.signals.iter().map(|s| s.contigs()).find(|c| !c.is_empty()))
+                .or_else(|| self.variants.iter().map(|v| v.header_contigs.clone()).find(|c| !c.is_empty()))
                 .unwrap_or_default();
             self.contigs_from_annotation = !contigs.is_empty();
             self.set_genome(contigs);
@@ -2129,6 +2175,12 @@ impl App {
     }
 
     /// The view as `contig:start-end`, for the pane header.
+    /// The place this pane has been sent to and not reached yet (its files or genes are still
+    /// loading), as it was asked for.
+    pub fn going_to(&self) -> Option<&str> {
+        self.pending_goto.as_deref()
+    }
+
     pub fn locus_label(&self) -> Option<String> {
         let c = self.contigs.get(self.contig)?;
         let (vs, ve) = self.visible();
@@ -2254,17 +2306,29 @@ impl App {
     /// something to show) and the track canvas.
     pub fn body(&mut self, ui: &mut egui::Ui) {
         if self.column_wanted() {
-            // Beside the tracks when the pane has room for both (at most half of it); in a narrow
-            // pane (three or four split) below them at full width instead, where the allele table
-            // and statistics stay readable. Either way it scrolls both ways rather
-            // than cutting off what doesn't fit.
+            // Beside the tracks when the pane has room for both (at most half of it, and the
+            // tracks keep a readable width); in a narrower pane (a split view) below them at full
+            // width instead, where the allele table and statistics stay readable and the tracks
+            // aren't squeezed to a strip between two panes. A pane too short to give the column
+            // its height and still show reads (a small window) keeps it beside. Either way it
+            // scrolls both ways rather than cutting off what doesn't fit.
             const MIN_SIDE: f32 = 300.0;
+            const SIDE: f32 = SIDE_COLUMN;
+            /// Tracks narrower than this beside the column show a few hundred bases of reads
+            /// and cut off their headers.
+            const MIN_TRACKS_BESIDE: f32 = 520.0;
+            /// The least height the column takes below the tracks, and the least the tracks
+            /// need above it (variant tracks, coverage and a dozen read rows).
+            const MIN_BELOW: f32 = 220.0;
+            const MIN_TRACKS_ABOVE: f32 = 420.0;
             let width = ui.available_width();
-            if width * 0.5 >= MIN_SIDE {
+            let cramped_beside = width - SIDE < MIN_TRACKS_BESIDE;
+            let room_below = ui.available_height() - MIN_BELOW >= MIN_TRACKS_ABOVE;
+            if width * 0.5 >= MIN_SIDE && !(cramped_beside && room_below) {
                 // Text wraps to the panel (it scrolls only up and down); it can't be dragged
                 // narrower than its content can wrap to, so nothing is cut off.
                 egui::Panel::right(("evidence", self.reference_slot))
-                    .default_size(330.0f32.min(width * 0.5))
+                    .default_size(SIDE.min(width * 0.5))
                     .min_size(240.0)
                     .max_size(width * 0.5)
                     .show(ui, |ui| {
@@ -2274,7 +2338,7 @@ impl App {
                 let height = ui.available_height();
                 egui::Panel::bottom(("evidence-below", self.reference_slot))
                     .resizable(true)
-                    .default_size((height * 0.4).clamp(220.0, 360.0))
+                    .default_size((height * 0.4).clamp(MIN_BELOW, 360.0))
                     .max_size(height * 0.6)
                     .show(ui, |ui| {
                         self.column(ui);
@@ -2288,6 +2352,14 @@ impl App {
             // with no input after it left the locus box wrong until the next event.
             ui.ctx().request_repaint();
         }
+    }
+
+    /// The first track showing an error instead of its data, as `file: error`.
+    fn first_track_error(&self) -> Option<String> {
+        let alignments = self.tracks.iter().filter_map(|t| Some(path_error(std::path::Path::new(&t.file_name()), t.error.as_ref()?)));
+        let variants = self.variants.iter().filter_map(|v| Some(path_error(std::path::Path::new(&v.file_name()), v.error.as_ref()?)));
+        let signals = self.signals.iter().filter_map(|s| Some(path_error(std::path::Path::new(&s.file_name()), s.error.as_ref()?)));
+        alignments.chain(variants).chain(signals).next()
     }
 
     /// Scripted runs: `others_ready` says the other panes have finished loading too.
@@ -2311,6 +2383,9 @@ impl App {
             || (empty && !coming && self.automation.is_some())
             || (!self.tracks.is_empty() || !self.genes.is_empty() || !self.variants.is_empty() || !self.signals.is_empty())
             && requested
+            // A genome or track still downloading isn't on screen yet.
+            && self.downloads.is_empty()
+            && self.pending_genome.is_none()
             && self.signals.iter().all(|s| !s.is_loading())
             // A track that failed to load (a CRAM without its reference, a damaged file) has
             // settled too: waiting for it hung scripted screenshots and agents (it shows its error).
@@ -2383,6 +2458,13 @@ impl App {
                     && !crate::automation::failed()
                 {
                     crate::automation::fail(e);
+                }
+                // So does a track that shows an error in place of its data (a truncated BAM,
+                // a contig its reference lacks): the screenshot was written, of a failure.
+                if !crate::automation::failed()
+                    && let Some(e) = self.first_track_error()
+                {
+                    crate::automation::fail(&e);
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
             }
@@ -2852,6 +2934,9 @@ impl App {
         }
         if self.contigs.is_empty() {
             self.welcome(ui, rect);
+            if let Some(hint) = self.no_genome_hint() {
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, hint, FontId::proportional(13.0), self.pal().muted);
+            }
             return;
         }
 
@@ -3491,7 +3576,7 @@ impl App {
                 if self.review_track() == Some(i) {
                     self.review_pick(&var);
                 }
-                self.open_variant_popup(i, var);
+                self.open_variant_popup_at(i, var, p);
             }
             if matches!(hit, Some(Hit::Track(_)) | None) && !on_header && !self.contigs.is_empty() {
                 let base = (base_at(p, self)).min(self.contig_len().max(1.0) as u64 - 1);
@@ -3676,6 +3761,18 @@ impl App {
         }
         painter.hline(rect.x_range(), rect.top() + RULER_H - 5.5, Stroke::new(1.0, muted));
 
+        // Alignments with no reference: said where the reference row would be, since plain grey
+        // reads otherwise look like a region with no variants.
+        if self.reference_path.is_none() && self.pending_reference.is_none() && self.pending_genome.is_none() && self.downloads.is_empty() && !self.tracks.is_empty() {
+            let genome = self.build().and_then(ggv_io::genomes::find);
+            let color = warning_rgb(self.style.dark);
+            let room = rect.width() - 12.0;
+            let fits = no_reference_hints(genome).into_iter().map(|h| painter.layout_no_wrap(h, FontId::proportional(11.0), color)).find(|g| g.size().x <= room);
+            if let Some(galley) = fits {
+                painter.galley(Pos2::new(rect.left() + 6.0, rect.top() + REF_TOP + (REF_H - galley.size().y) / 2.0), galley, color);
+            }
+        }
+
         // Reference letters.
         if self.ppb >= f64::from(LETTERS_PPB)
             && let Some((view, _, _)) = &self.reference
@@ -3715,7 +3812,9 @@ impl App {
 
         // Overlays: tinted bands across every track, each with a label tag in the ruler band, in
         // at most two lanes above the sequence, so tags never reach it or the tracks; labels
-        // that don't fit are counted in a "+N" tag and shown on hovering the ruler.
+        // that don't fit are counted in a "+N" tag and shown on hovering the ruler. The lower
+        // lane (over the tick marks) fills first: the upper one is where the ruler's positions
+        // are printed, and a tag there hides where the marked region is.
         let contig = self.contigs.get(self.contig).map(|c| c.name.clone()).unwrap_or_default();
         let mut tags: Vec<(f32, f32, f32)> = Vec::new();
         let mut unshown = 0;
@@ -3736,7 +3835,7 @@ impl App {
                 let galley = painter.layout_no_wrap(o.label.clone(), FontId::proportional(11.0), Color32::WHITE);
                 let w = galley.size().x + 8.0;
                 let x = x0.clamp(rect.left() + 2.0, (rect.right() - w - 2.0).max(rect.left() + 2.0));
-                let lane = (0..lanes).find(|&k| {
+                let lane = (0..lanes).rev().find(|&k| {
                     let y = rect.top() + 1.0 + k as f32 * TAG_H;
                     !tags.iter().any(|&(a, b, ty)| x < b && x + w > a && (ty - y).abs() < TAG_H)
                 });
@@ -3920,7 +4019,20 @@ impl App {
             if g.first_row > 0 {
                 rp.hline(section.x_range(), y - rl.pitch / 2.0, Stroke::new(1.0, self.pal().rule_strong));
             }
-            let label = format!("{}  ({} reads)", g.label, commas(g.reads as u64));
+            // Reads are loaded for a wider span than the view: count the group's reads on
+            // screen, and say when more are loaded beside it (a band of "28 reads" showing one).
+            let shown: usize = packed.rows[g.first_row..(g.first_row + g.rows).min(packed.rows.len())]
+                .iter()
+                .map(|row| {
+                    let from = row.partition_point(|&k| (reads[k].end as f64) <= vs);
+                    row[from..].iter().take_while(|&&k| (reads[k].start as f64) < ve).count()
+                })
+                .sum();
+            let label = if shown == g.reads {
+                format!("{}  ({} reads)", g.label, commas(g.reads as u64))
+            } else {
+                format!("{}  ({} reads in view, {} loaded)", g.label, commas(shown as u64), commas(g.reads as u64))
+            };
             let galley = rp.layout_no_wrap(label, FontId::proportional(10.5), self.pal().text);
             let at = Pos2::new(section.left() + 4.0, y + 1.0);
             rp.rect_filled(Rect::from_min_size(at - Vec2::new(2.0, 1.0), galley.size() + Vec2::new(4.0, 2.0)), 2.0, self.pal().label_bg);
@@ -4105,7 +4217,7 @@ impl App {
         // Nothing here: say so rather than leave the track blank (the header's file-wide counts
         // looked like a failed load).
         if self.genes_in_view(i) == Some(0) {
-            let what = if built.is_all() { "No transcripts here" } else { "No genes here" };
+            let what = if built.is_all() { "No transcripts here".to_owned() } else { self.no_main_transcript_here(i) };
             rp.text(Pos2::new(section.left() + 4.0, top + genes::ROWS_TOP + 2.0), Align2::LEFT_TOP, what, FontId::monospace(10.0), self.pal().muted);
         }
         let first = (g.scroll_y / genes::PITCH).floor() as usize;
@@ -4145,6 +4257,13 @@ impl App {
 
                 // Name under the feature, centred on its visible part, unless it would collide.
                 let name = if built_all(g) { format!("{} ({})", t.gene_name, ggv_annot::without_copy_suffix(&t.id)) } else { t.gene_name.to_string() };
+                // A transcript with no intron has nowhere to draw chevrons (most yeast and
+                // bacterial genes, histones, many non-coding RNAs): its name points instead.
+                let name = match (t.exons.len(), t.strand) {
+                    (..=1, ggv_annot::Strand::Forward) => format!("{name} >"),
+                    (..=1, ggv_annot::Strand::Reverse) => format!("< {name}"),
+                    _ => name,
+                };
                 let x0 = self.x_of(section, vs, t.start as f64).max(section.left());
                 let x1 = self.x_of(section, vs, t.end as f64).min(section.right());
                 let galley = rp.layout_no_wrap(name, font.clone(), self.pal().text);
@@ -4168,6 +4287,29 @@ impl App {
         }
         let (vs, ve) = self.visible();
         Some(built.items.iter().filter(|t| (t.end as f64) > vs && (t.start as f64) < ve).count())
+    }
+
+    /// What gene track `i` says when it draws one transcript per gene and none is in view: that
+    /// no gene is here, or, inside a gene whose main transcript doesn't reach this far (another
+    /// promoter's first exon, say), whose other transcripts are, so the place isn't taken for
+    /// intergenic.
+    fn no_main_transcript_here(&self, i: usize) -> String {
+        const NO_GENES: &str = "No genes here";
+        let (Some(ann), Some(contig)) = (self.genes.get(i).and_then(|g| g.annotation()), self.contigs.get(self.contig)) else { return NO_GENES.to_owned() };
+        let (vs, ve) = self.visible();
+        let (start, end) = (vs.max(0.0) as u64, (ve.max(0.0) as u64).max(vs.max(0.0) as u64 + 1));
+        let here: Vec<&ggv_annot::Transcript> = ann.query(&contig.name, start, end).filter(|t| t.start < end && start < t.end).collect();
+        let mut genes: Vec<&str> = here.iter().map(|t| &*t.gene_name).collect();
+        genes.sort_unstable();
+        genes.dedup();
+        if genes.is_empty() {
+            return NO_GENES.to_owned();
+        }
+        /// Gene names spelt out before the rest are counted.
+        const NAMED: usize = 3;
+        let others = if here.len() == 1 { "1 other transcript".to_owned() } else { format!("{} other transcripts", here.len()) };
+        let more = if genes.len() > NAMED { format!(" and {} more", genes.len() - NAMED) } else { String::new() };
+        format!("No main transcript here  ·  {others} of {}{more} (All transcripts shows them; Evidence names the best)", genes[..genes.len().min(NAMED)].join(", "))
     }
 
     /// Gene track `i`'s header: what is in view (as variant tracks say), then the file's counts.
@@ -4326,7 +4468,7 @@ impl App {
                         painter.rect_filled(Rect::from_min_max(Pos2::new(x, y_mean.min(base)), Pos2::new(x + 1.0, y_mean.max(base).max(y_mean.min(base) + 1.0))), 0.0, color);
                     }
                 }
-                state = format!("range {} – {}", fmt_value(lo), fmt_value(hi));
+                state = if cols.iter().all(Option::is_none) { "no values here".to_owned() } else { format!("range {} – {}", fmt_value(lo), fmt_value(hi)) };
             }
         }
         self.header_title(painter, section, format!("Signal  ·  {}  ·  {state}", s.file_name()), Layout::grip(section).left() - 6.0);
@@ -4874,7 +5016,11 @@ fn evidence_text(name: &str, locus: &str, s: &ggv_query::PositionStats) -> Strin
     }
     out.push_str(&format!("MAPQ mean {:.1} ({} at 0), base Q mean {:.1}\n", s.mean_mapping_quality, s.mapping_quality_zero, s.mean_base_quality));
     if let Some(alt) = &s.top_alt {
-        out.push_str(&format!("top alt {} at {:.1}% ({} fwd / {} rev){}\n", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+        out.push_str(&format!("{} {} at {:.1}% ({} fwd / {} rev){}\n", top_alt_label(s), alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+    }
+    if !s.has_reference_base() {
+        out.push_str(NO_REFERENCE_BASE);
+        out.push('\n');
     }
     out
 }
@@ -5154,6 +5300,30 @@ fn error_rgb(dark: bool) -> Color32 {
 }
 
 /// The warning text colour, amber in both themes.
+/// How the Evidence panel introduces a position's `top_alt`: the top alternate against a
+/// reference base, else what it is without one.
+fn top_alt_label(s: &ggv_query::PositionStats) -> &'static str {
+    if s.has_reference_base() { "top alt" } else { "second most common" }
+}
+
+/// Said under a position's counts when there is no reference base to compare them with.
+const NO_REFERENCE_BASE: &str = "no reference base here: the commonest base may itself be a variant";
+
+/// The reference row's hint when alignments are open without a reference, and its shorter forms
+/// for narrower panes.
+fn no_reference_hints(genome: Option<&ggv_io::genomes::Genome>) -> Vec<String> {
+    const SHORT: &str = "No reference: mismatches aren't drawn";
+    let mut hints = Vec::new();
+    if let Some(g) = genome {
+        let cost = if ggv_io::genomes::cached(g).is_some() { "already downloaded".to_owned() } else { format!("{} MB, downloaded once", g.size / 1_000_000) };
+        hints.push(format!("{SHORT} and variants can't be told from the reference  ·  Open > Reference… > {} adds it ({cost})", g.name));
+        hints.push(format!("{SHORT}  ·  Open > Reference… > {}", g.name));
+    }
+    hints.push(format!("{SHORT}  ·  Open > Reference… adds one"));
+    hints.push(SHORT.to_owned());
+    hints
+}
+
 fn warning_rgb(dark: bool) -> Color32 {
     if dark { Color32::from_rgb(240, 175, 60) } else { Color32::from_rgb(160, 95, 0) }
 }

@@ -205,7 +205,17 @@ impl Shell {
             }
             other => return Err(format!("unknown panes action `{other}`: list, split, close, activate or link")),
         }
-        let panes: Vec<serde_json::Value> = self.panes.iter().enumerate().map(|(i, p)| serde_json::json!({"pane": i + 1, "region": p.locus_label()})).collect();
+        let panes: Vec<serde_json::Value> = self
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(i, p)| match p.going_to() {
+                // A pane still on its way (just split at a gene, its annotation not read yet)
+                // has a placeholder view: say where it is going, not `chr1:1-600`.
+                Some(target) => serde_json::json!({"pane": i + 1, "region": null, "going_to": target}),
+                None => serde_json::json!({"pane": i + 1, "region": p.locus_label()}),
+            })
+            .collect();
         Ok(serde_json::json!({"count": self.panes.len(), "active_pane": self.active + 1, "linked": self.linked, "panes": panes}))
     }
 

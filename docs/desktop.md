@@ -102,11 +102,16 @@ sit at the bottom, as in IGV: thick CDS, thin UTRs, introns with strand chevrons
 underneath (skipped where they would collide). One transcript per gene is shown (MANE Select,
 then MANE Plus Clinical, then Ensembl canonical, then the curated transcript with the longest CDS,
 then predicted models); MANE comes from the file's tags or, for files without them such as UCSC's
-ncbiRefSeq, from the MANE GRCh38 v1.5 list (NCBI/EMBL-EBI, public domain) built into GGV. Tick **All transcripts** to see every one. Hover
+ncbiRefSeq, from the MANE GRCh38 v1.5 list (NCBI/EMBL-EBI, public domain) built into GGV. Tick **All transcripts** to see every one.
+Where a gene's main transcript doesn't reach (another promoter's first exon, a longer 3' end),
+the track says whose other transcripts are there instead of "No genes here", and the Evidence
+panel and consequences name the gene's best transcript at the base, as an agent's `evidence`
+does. A transcript without introns shows its strand beside its name (`< SSA1`, `VPS8 >`). Hover
 for the transcript id, biotype, exon count, coding length, tags, and which exon (numbered in the
 direction of transcription) is under the pointer. Double-click a gene to fit it in the view. Type a gene name, gene id or transcript id
 (`BRCA1`, `ENSG00000012048`, `ENST00000357654.9`) in the locus box to jump to it. With no BAM
-open, an annotation alone defines the genome.
+open, an annotation alone defines the genome, and so does a VCF or BCF whose header gives its
+contigs' lengths.
 
 Annotations over 4 MB are parsed once and cached (in `~/Library/Caches/ggv/annotations`,
 `$XDG_CACHE_HOME/ggv/annotations` or `%LOCALAPPDATA%\ggv\annotations`; `GGV_ANNOTATION_CACHE` names
@@ -138,6 +143,9 @@ times with it loaded: about 1 ms across all of chr17, 0.4 ms at 2 Mb, and unchan
 - **Session → Export view as PNG…** saves the tracks exactly as drawn. **Dark** switches theme.
 - **Group by base here** (right-click a base, or `--group base`): reads in bands by the base they
   carry there (A/C/G/T, deletion, not covering), for eyeballing which reads support an allele.
+- **No reference open**: the reference row says so (mismatches aren't drawn without one) and
+  names the built-in genome that matches the alignments, under **Open > Reference…**. The
+  Evidence panel then gives the second most common base in place of a top alternate.
 - **Evidence** panel: exact counts at the outlined base (click a base to outline it, click it
   again or Esc to clear; once it is panned off screen the panel follows the view's centre again)
   from the same pileup engine as `ggv query pileup`: per-track depth, bases by strand, deletions,
@@ -149,7 +157,8 @@ times with it loaded: about 1 ms across all of chr17, 0.4 ms at 2 Mb, and unchan
   genotypes, DP and AD.
 - **Variant triage** (**Review…**, or `--review`): steps through a VCF's sites. Press 1 / 2 / 3
   to mark the outlined site real / artifact / unsure (with an optional note) and move on, N / P
-  to skip. Decisions are saved on every change to `<vcf>.ggv-review.tsv` next to the VCF, so a
+  to skip. **Passing sites only** leaves out records whose FILTER isn't PASS (the RefCall and
+  LowQual records a caller writes beside its calls). Decisions are saved on every change to `<vcf>.ggv-review.tsv` next to the VCF, so a
   review resumes where it stopped; reviewed sites get a coloured tick on the track. When the
   VCF's folder can't be written (a read-only share), decisions go to GGV's own folder instead and
   the review says where; **Save reviews in…** picks a folder for every review and queue. Saves
@@ -204,7 +213,10 @@ every shortcut:
   alleles they carry at the heterozygous sites in the loaded span, for data without `HP` tags.
   Sites are found from the reads (one alternate base at 25–75%, depth ≥ 6), oriented left to
   right through reads that span two or more, and each read goes to the haplotype its alleles
-  vote for; the group labels give the site and block counts. Against phase from transmission in
+  vote for; the group labels give the site and block counts. With several blocks (sites no
+  read links), A and B are one haplotype each only within a block, and the labels say so. In
+  satellite and other repeats, where reads differ at hundreds of sites for reasons other than
+  the two haplotypes, the split is not reliable. Against phase from transmission in
   the HG002 trio (which uses no reads) it agrees on 100% of reads both place (HiFi and Illumina),
   in under 1 ms per load. Needs a reference (sites come from mismatches).
 - **Command palette** (Ctrl+K, or **Commands**): one fuzzy box for genes, loci, contigs,
@@ -249,7 +261,8 @@ every shortcut:
   loaded (no disk). `]` / `[` step to the next / previous one; beyond what is loaded a
   background pileup scan of both files finds it, across chromosomes.
 - **Measure** (Ctrl+drag): length, GC content, and each track's mean depth and read count over
-  the span, live while dragging, from loaded data.
+  the span, live while dragging, from loaded data. It stays until Esc, and shows only while some
+  of the span is in view.
 - **Copy as**: right-click to copy a read's sequence or SAM line, the selection (or view) as
   FASTA, the selected reads as SAM, or the view as an image (Ctrl+Shift+C) straight to the
   clipboard. Copies that need the disk run on a background thread.
@@ -345,6 +358,9 @@ frame with data takes about 0.8 s.
 Automation flags, for CI or checking a change: `--screenshot out.png` saves the real GPU frame
 once data has loaded (in every pane), then exits; `--bench` prints the table above, then exits;
 `--zoom-cycle` zooms all the way out and back in and reports each track's load state.
+A scripted run waits for a genome or track that is still downloading, and exits 1 when an
+error is showing or a track shows an error in place of its data (a truncated file, a contig
+its reference lacks).
 With split panes, scripted runs print where each pane ended up. They never overwrite the saved
 last session.
 

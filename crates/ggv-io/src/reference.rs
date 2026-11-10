@@ -36,7 +36,7 @@ impl ReferenceFasta {
             let needed = std::iter::once("fai").chain(gz.then_some("gzi"));
             let missing: Vec<String> = needed.map(|e| path.with_added_extension(e)).filter(|p| !p.exists()).map(|p| crate::assembly::display_name(&p)).collect();
             if !missing.is_empty() {
-                let msg = format!("no FASTA index (looked for {}); create it with `samtools faidx`, or open the file in the GGV app, which offers to build it", missing.join(", "));
+                let msg = format!("no FASTA index (looked for {}); create it with `ggv index` (or `samtools faidx`), or open the file in the GGV app, which offers to build it", missing.join(", "));
                 return Err(Error::Io { path, cause: std::io::Error::new(std::io::ErrorKind::NotFound, msg) });
             }
         }
@@ -65,7 +65,7 @@ impl ReferenceFasta {
             start: Some(region.start + 1),
             end: Some(region.end),
         };
-        let region = resolve_locus(&self.contigs, &locus)?;
+        let region = resolve_locus(&self.contigs, &locus).map_err(|e| e.in_reference(&self.path))?;
         let reader = match &mut self.reader {
             Inner::TwoBit(t) => return t.fetch(&region.contig, region.start, region.end),
             Inner::Fasta(r) => r,

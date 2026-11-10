@@ -115,10 +115,11 @@ impl BamFile {
         if is_cram(&path) {
             return Self::open_cram(path, reference.as_ref().map(AsRef::as_ref));
         }
-        let (index, index_path) = read_index(&path)?;
-
+        // The header before the index: a file that isn't a BAM at all is told so, not asked
+        // for an index it could never have.
         let mut reader = File::open(&path).map(bam::io::Reader::new).at(&path)?;
-        let header = reader.read_header().at(&path)?;
+        let header = reader.read_header().map_err(|cause| Error::NotAlignments { hint: other_kind(&path), path: path.clone(), cause })?;
+        let (index, index_path) = read_index(&path)?;
         let mut file = Self::new(path, index_path, Inner::Bam { reader, index: std::sync::Arc::new(index) }, header);
         file.len = meta.len();
         file.missing_eof = !ends_with_eof_marker(&file.path, file.len);
@@ -131,7 +132,7 @@ impl BamFile {
         }
         let candidates = [path.with_added_extension("crai"), path.with_extension("crai")];
         let Some(index_path) = candidates.iter().find(|p| p.exists()).cloned() else {
-            return Err(Error::MissingIndex { path: path.clone(), tried: "x.cram.crai, x.crai".into(), how: "create one with `samtools index`".into() });
+            return Err(Error::MissingIndex { path: path.clone(), tried: "x.cram.crai, x.crai".into(), how: INDEX_HOW.into() });
         };
         let index = cram::crai::fs::read(&index_path).at(&index_path)?;
         let repository = match reference {
@@ -219,7 +220,8 @@ impl BamFile {
         let header = if is_cram(path) {
             cram::io::reader::Builder::default().build_from_path(path).at(path)?.read_header().at(path)?
         } else {
-            File::open(path).map(bam::io::Reader::new).at(path)?.read_header().at(path)?
+            let mut reader = File::open(path).map(bam::io::Reader::new).at(path)?;
+            reader.read_header().map_err(|cause| Error::NotAlignments { hint: other_kind(path), path: path.to_owned(), cause })?
         };
         Ok(info_of(path, "none".into(), &header))
     }
@@ -427,12 +429,36 @@ fn compression_ratio(path: &Path, offsets: &[bgzf::VirtualPosition]) -> Option<f
     (uncompressed > 0).then(|| compressed as f64 / uncompressed as f64)
 }
 
+/// How to get the index an alignment file lacks.
+const INDEX_HOW: &str = "create one with `ggv index` (or `samtools index`)";
+
+/// What a file that failed to open as a BAM looks like instead, from its name: said after
+/// "not a BAM file".
+fn other_kind(path: &Path) -> &'static str {
+    let name = path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    let ends = |exts: &[&str]| exts.iter().any(|e| name.ends_with(e));
+    if ends(&[".vcf", ".vcf.gz", ".vcf.bgz", ".bcf"]) {
+        " (it is named as a variant file)"
+    } else if ends(&[".fa", ".fasta", ".fna", ".fa.gz", ".fasta.gz", ".fna.gz", ".2bit"]) {
+        " (it is named as a reference sequence)"
+    } else if ends(&[".gtf", ".gff", ".gff3", ".bed", ".gtf.gz", ".gff.gz", ".gff3.gz", ".bed.gz"]) {
+        " (it is named as an annotation)"
+    } else if ends(&[".bw", ".bigwig", ".bedgraph", ".bg", ".seg", ".bedgraph.gz", ".bg.gz"]) {
+        " (it is named as a signal track)"
+    } else if ends(&[".sam"]) {
+        " (SAM text must be converted and sorted first: `samtools sort -o x.bam x.sam`)"
+    } else {
+        ""
+    }
+}
+
 fn read_index(bam: &Path) -> Result<(bam::Index, PathBuf)> {
-    let candidates = [
-        (bam.with_added_extension("bai"), false),
-        (bam.with_added_extension("csi"), true),
-        (bam.with_extension("bai"), false),
-    ];
+    let mut candidates = vec![(bam.with_added_extension("bai"), false), (bam.with_added_extension("csi"), true)];
+    // `x.bai` beside `x.bam`; a name without an extension has that one already.
+    let sibling = bam.with_extension("bai");
+    if sibling != candidates[0].0 {
+        candidates.push((sibling, false));
+    }
 
     for (candidate, is_csi) in &candidates {
         let result = if *is_csi {
@@ -454,7 +480,7 @@ fn read_index(bam: &Path) -> Result<(bam::Index, PathBuf)> {
             .map(|(p, _)| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join(", "),
-        how: "create one with `samtools index`".into(),
+        how: INDEX_HOW.into(),
     })
 }
 

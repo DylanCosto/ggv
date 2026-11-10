@@ -1,6 +1,6 @@
 //! The demo (real HG002 long reads, 4.3 MB, downloaded once), the welcome shown when nothing is open,
 //! and a short tour: a deletion on one haplotype, Evidence at a base, methylation, variant review,
-//! then what your own files need.
+//! the command palette and agents, then what your own files need.
 
 use eframe::egui::{self, Align2, Rect, RichText, Vec2};
 use ggv_io::demo;
@@ -21,10 +21,31 @@ const STEPS: &[(&str, &str)] = &[
         "Variant review steps through the calls: mark each real, artifact or unsure (keys 1, 2, 3; N and P step) with an optional note. Decisions are saved as you go, beside the VCF.",
     ),
     (
+        "Every command, and agents",
+        "Ctrl+K finds every command, gene, bookmark and recent file by a few letters; ? lists the keys. An AI agent can look at this window with you: started as `ggv mcp --attach`, it answers about what you see (the outlined base, the selection, the view), so \"is this variant real?\" needs no coordinates.",
+    ),
+    (
         "Your own data",
         "Open alignments (BAM or CRAM) with their index (.bai, .csi or .crai; GGV offers to build a missing one), and a reference: a FASTA with its .fai, or a built-in genome from Reference (it downloads once). CRAM needs the reference it was made with. Add variants (VCF or BCF, indexed .tbi or .csi), genes (GTF, GFF3 or BED) and signals (bigWig, bedGraph, SEG). Drag files onto the window, or use the toolbar.",
     ),
 ];
+
+/// The width the tour's text wraps to.
+const TOUR_WIDTH: f32 = 320.0;
+
+/// What step `k` says: its own text, or its stop's in the demo.
+fn step_text(k: usize) -> &'static str {
+    let text = STEPS[k].1;
+    if text.is_empty() { demo::STOPS[k].1 } else { text }
+}
+
+/// The step whose button opens the command palette. It and the step after it open something
+/// (the palette, a file dialog) instead of moving the view, so they do it on their button, not
+/// on arriving: Next used to put a file dialog in front of someone still reading the tour.
+const PALETTE_STEP: usize = 4;
+
+/// The tour window's distance from the right and bottom edges of the tracks.
+const TOUR_MARGIN: Vec2 = Vec2::new(12.0, 12.0);
 
 impl App {
     /// Opens the demo at the tour's first stop, with the tour; downloads it first (once, in the
@@ -73,32 +94,69 @@ impl App {
                     self.start_review(0);
                 }
             }
+            PALETTE_STEP => self.run(super::actions::Action::Palette, ctx),
             _ => self.run(super::actions::Action::AddBam, ctx),
+        }
+    }
+
+    /// Moves the tour to step `n`, showing its place when it has one (the steps before
+    /// [`PALETTE_STEP`]).
+    fn tour_go(&mut self, n: usize, ctx: &egui::Context) {
+        self.tour = Some(n);
+        if n < PALETTE_STEP {
+            self.tour_show(n, ctx);
         }
     }
 
     pub(super) fn tour_window(&mut self, ctx: &egui::Context) {
         let Some(k) = self.tour else { return };
         let k = k.min(STEPS.len() - 1);
-        let (title, text) = STEPS[k];
-        let text = if text.is_empty() { demo::STOPS[k].1 } else { text };
+        let title = STEPS[k].0;
+        let text = step_text(k);
         let mut open = true;
         let mut go = None;
         let mut show = false;
-        egui::Window::new("Tour")
-            .id(egui::Id::unique(("tour", self.reference_slot)))
-            .anchor(Align2::RIGHT_TOP, Vec2::new(-12.0, 90.0))
+        // At the tracks' bottom, where their right edge is with the side column open: clear of
+        // the column, whose panels (Evidence, Variant review) are what the steps talk about, of
+        // the tracks' headers at the top, and of the bottom left, where the gene track says
+        // what is there; and in the same place whether the column is open at a step or not, so
+        // Next stays under the pointer. It can be dragged away, and is put back when that
+        // corner moves (the window resized, the column widened or put below the tracks).
+        let pane = self.pane_rect(ctx);
+        let right = pane.right().min(ctx.content_rect().right() - super::SIDE_COLUMN).max(pane.left() + TOUR_WIDTH);
+        let spot = (egui::pos2(right, pane.bottom()) - TOUR_MARGIN, Align2::RIGHT_BOTTOM);
+        let id = egui::Id::unique(("tour", self.reference_slot));
+        let corner = id.with("tracks-corner");
+        let before = ctx.data(|d| d.get_temp::<egui::Pos2>(corner));
+        if before.is_some_and(|b| b.distance(spot.0) > 1.0) {
+            super::inspector::place_again(ctx, id);
+        }
+        ctx.data_mut(|d| d.insert_temp(corner, spot.0));
+        super::inspector::placed(ctx, egui::Window::new("Tour"), id, spot, self.pane_settled())
             .resizable(false)
             .collapsible(true)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.set_max_width(320.0);
+                ui.set_max_width(TOUR_WIDTH);
                 ui.label(RichText::new(format!("{} of {}  ·  {title}", k + 1, STEPS.len())).strong());
                 ui.add_space(4.0);
-                ui.label(text);
+                // Every step gets the room of the longest: the window is put by its bottom
+                // corner only as it first opens, and a later, longer step grew it down over the
+                // status bar.
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let color = ui.visuals().text_color();
+                let tallest = (0..STEPS.len()).map(|i| ui.painter().layout(step_text(i).to_owned(), font.clone(), color, TOUR_WIDTH).size().y).fold(0.0, f32::max);
+                ui.allocate_ui_with_layout(Vec2::new(TOUR_WIDTH, tallest), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.set_min_height(tallest);
+                    ui.label(text);
+                });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    let label = if k + 1 == STEPS.len() { "Open my files…" } else { "Show me" };
+                    let label = match k {
+                        _ if k + 1 == STEPS.len() => "Open my files…",
+                        PALETTE_STEP => "Open the palette",
+                        _ => "Show me",
+                    };
                     if ui.button(label).clicked() {
                         show = true;
                     }
@@ -115,8 +173,7 @@ impl App {
             self.tour_show(k, ctx);
         }
         if let Some(n) = go {
-            self.tour = Some(n);
-            self.tour_show(n, ctx);
+            self.tour_go(n, ctx);
         }
         if !open {
             self.tour = None;
@@ -159,5 +216,25 @@ impl App {
             ui.add_space(6.0);
             ui.label(RichText::new("Ctrl+K: every command  ·  ?: keyboard shortcuts").weak().small());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Next and Back only move the view: the palette and the file dialog wait for their button.
+    #[test]
+    fn arriving_at_a_step_opens_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, super::super::Args::default()).unwrap();
+        for n in PALETTE_STEP..STEPS.len() {
+            app.tour_go(n, &ctx);
+            assert_eq!(app.tour, Some(n));
+            assert!(app.palette.is_none() && app.dialog.is_none(), "step {} opened something on arrival", n + 1);
+        }
+        // Its button is what opens the palette.
+        app.tour_show(PALETTE_STEP, &ctx);
+        assert!(app.palette.is_some());
     }
 }

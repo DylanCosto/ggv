@@ -523,6 +523,28 @@ pub fn is_predicted(id: &str) -> bool {
     id.starts_with("XM_") || id.starts_with("XR_")
 }
 
+/// One transcript for each gene among those at a place: the gene's representative (MANE Select,
+/// else canonical, else the longest curated coding one), or where that one doesn't reach (an
+/// upstream first exon of another promoter, a longer 3' end), the gene's best one there: curated
+/// over a predicted model, coding, the longest coding sequence. In the order the genes first
+/// appear in `here`.
+///
+/// What an evidence answer names when it names one transcript per gene: without the second
+/// half, a coding exon the representative lacks reads as "no gene here".
+#[must_use]
+pub fn one_per_gene<'a>(here: impl IntoIterator<Item = &'a Transcript>) -> Vec<&'a Transcript> {
+    let rank = |t: &Transcript| (t.representative, !is_predicted(&t.id), t.cds.is_some(), t.cds_len());
+    let mut picks: Vec<&Transcript> = Vec::new();
+    for t in here {
+        match picks.iter().position(|p| p.gene_id == t.gene_id) {
+            Some(i) if rank(t) > rank(picks[i]) => picks[i] = t,
+            Some(_) => {}
+            None => picks.push(t),
+        }
+    }
+    picks
+}
+
 /// The number of a curated RefSeq accession (`NM_004333.6` → 4333; also `NR_`), whatever
 /// version or UCSC copy suffix (`NM_000451.4_2`) follows.
 fn curated_number(id: &str) -> Option<u64> {

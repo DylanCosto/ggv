@@ -208,7 +208,8 @@ fn pileup_section(heading: String, s: &PositionStats) -> Section {
         s.mean_mapping_quality, s.mapping_quality_zero, s.mean_base_quality, s.soft_clipped_left, s.soft_clipped_right
     ));
     if let Some(alt) = &s.top_alt {
-        sec.lines.push(format!("top alternate {} at {:.1}% ({} forward / {} reverse)", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev));
+        let what = if s.has_reference_base() { "top alternate" } else { "second most common (no reference base to compare with)" };
+        sec.lines.push(format!("{what} {} at {:.1}% ({} forward / {} reverse)", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev));
         if alt.count.total >= 4 && (alt.count.fwd == 0 || alt.count.rev == 0) {
             sec.warning = Some("The alternate allele is supported by one strand only — a common artifact.".into());
         }
@@ -396,7 +397,7 @@ fn snapshot(b: &Batch, h: &mut Handles, ann: Option<&Annotation>, index: usize, 
                     sec.table.push(vec![
                         v.pos.to_string(),
                         v.ref_base.map_or(".".into(), |c| c.to_string()),
-                        v.alt.clone(),
+                        if v.length > 1 { format!("{} {} bp", v.alt, v.length) } else { v.alt.clone() },
                         format!("{:.0}", v.alt_fraction * 100.0),
                         format!("{} / {}", v.alt_fwd, v.alt_rev),
                         v.depth.to_string(),

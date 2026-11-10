@@ -365,8 +365,17 @@ pub fn fill(tool: &str, args: &Value, pane: &Value) -> (Value, serde_json::Map<S
         let filters = pane["filters"].as_array().cloned().unwrap_or_default();
         let of = |p: &PathBuf| filters.iter().find(|f| f["path"].as_str().is_some_and(|x| std::path::Path::new(x) == p.as_path())).cloned();
         let found: Vec<Value> = used.iter().filter_map(of).collect();
-        if let Some(first) = found.first() {
-            if found.iter().any(|f| f["exclude_flags"] != first["exclude_flags"] || f["min_mapq"] != first["min_mapq"] || f["expression"] != first["expression"]) {
+        let differ = |f: &Value, g: &Value| f["exclude_flags"] != g["exclude_flags"] || f["min_mapq"] != g["min_mapq"] || f["expression"] != g["expression"];
+        if tool == "compare" && used.len() == 2 && found.len() == 2 && differ(&found[0], &found[1]) {
+            // The window compares each track under its own filter; so does the tool.
+            let own = |f: &Value| json!({"exclude_flags": f["exclude_flags"], "min_mapq": f["min_mapq"], "filter": f["expression"].as_str().unwrap_or("")});
+            a["a_filters"] = own(&found[0]);
+            a["b_filters"] = own(&found[1]);
+            let shown = |f: &Value| json!({"exclude_flags": f["exclude_flags"], "min_mapq": f["min_mapq"], "expression": f["expression"]});
+            applied.insert("filters".into(), json!({"a": shown(&found[0]), "b": shown(&found[1])}));
+            notes.push("the two files have different read filters in the app; each was counted with its own, as the window's comparison does".into());
+        } else if let Some(first) = found.first() {
+            if found.iter().any(|f| differ(f, first)) {
                 notes.push(format!(
                     "the files have different read filters in the app; all were counted with {}'s; pass one file at a time for each file's own",
                     first["path"].as_str().unwrap_or("the first file")
@@ -405,6 +414,27 @@ mod tests {
             ],
             "ready": true,
         })
+    }
+
+    /// The window's comparison counts each track under its own filter; so does the tool, where
+    /// it used to count both under the first file's and find nothing.
+    #[test]
+    fn compare_takes_each_tracks_own_filter() {
+        let mut p = pane();
+        p["filters"][0]["expression"] = json!("hp == 1");
+        p["filters"][1]["expression"] = json!("hp == 2");
+        let (a, applied, notes) = fill("compare", &json!({}), &p);
+        assert_eq!((a["a_filters"]["filter"].as_str(), a["b_filters"]["filter"].as_str()), (Some("hp == 1"), Some("hp == 2")));
+        assert_eq!(a["a_filters"]["min_mapq"], 20);
+        assert!(a.get("filter").is_none(), "no one filter for both: {a}");
+        assert_eq!(applied["filters"]["b"]["expression"], "hp == 2");
+        assert!(notes.iter().any(|n| n.contains("each was counted with its own")), "{notes:?}");
+        // The same filter on both: one filter, as for any other tool.
+        let (a, _, notes) = fill("compare", &json!({}), &pane());
+        assert!(a.get("a_filters").is_none() && a["filter"] == "!supplementary" && notes.is_empty(), "{a} {notes:?}");
+        // Another tool over the two files still says which filter it used for both.
+        let (_, _, notes) = fill("summarize", &json!({}), &p);
+        assert!(notes.iter().any(|n| n.contains("different read filters")), "{notes:?}");
     }
 
     #[test]

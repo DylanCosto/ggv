@@ -284,6 +284,27 @@ mod tests {
         }
     }
 
+    /// Two bands however many blocks, and the labels say when A and B aren't one haplotype each.
+    #[test]
+    fn group_labels_say_when_blocks_are_not_comparable() {
+        use crate::{GroupBy, PackOptions, pack_with};
+        let mut reads = Vec::new();
+        for _ in 0..4 {
+            reads.push(read(0, 200, &[(100, b'T')]));
+            reads.push(read(0, 200, &[]));
+            reads.push(read(1000, 1200, &[(1100, b'G')]));
+            reads.push(read(1000, 1200, &[]));
+        }
+        let opts = PackOptions { max_rows: 100, min_gap: 0, group: GroupBy::Alleles, sort: None, link: false };
+        let labels = |reads: &[AlignedRead]| pack_with(reads, &opts).groups.iter().map(|g| g.label.clone()).collect::<Vec<_>>();
+        assert_eq!(labels(&reads), [
+            "allele phase A · 2 het sites · 2 blocks, A and B set per block",
+            "allele phase B · 2 het sites · 2 blocks, A and B set per block",
+        ]);
+        let one: Vec<AlignedRead> = reads.iter().filter(|r| r.start == 0).cloned().collect();
+        assert_eq!(labels(&one), ["allele phase A · 1 het site · 1 block", "allele phase B · 1 het site · 1 block"]);
+    }
+
     #[test]
     fn linked_sites_share_a_block() {
         // Sites at 110 and 130 joined by the same reads; 300 on its own.

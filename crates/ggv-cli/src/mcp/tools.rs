@@ -96,6 +96,22 @@ type Prefetch = HashMap<(usize, String, u64), (Option<PositionStats>, Arc<Vec<Al
 /// Regions wider than this get no reads (as in the app).
 const READ_WINDOW: u64 = 100_000;
 const MAX_LOCI: usize = 50;
+/// Heterozygous sites `phase` lists unless asked for more: a satellite region has hundreds, at
+/// about 100 characters each.
+const DEFAULT_PHASE_SITES: u64 = 50;
+const MAX_PHASE_SITES: u64 = 5000;
+/// Said in `evidence` when there is no reference base to tell the alleles from.
+const NO_REFERENCE_EVIDENCE: &str = "no reference base here: which allele is the variant can't be told, and the most common one may be it (a homozygous change). Pass `reference`, or start the server with -f or --genome";
+/// Said in `summarize` without a reference.
+const NO_REFERENCE_SUMMARY: &str = "no reference: variable sites are positions where an allele other than the most common one reaches the threshold, so homozygous variants are not among them. Pass `reference`, or start the server with -f or --genome";
+/// `repeats` warns that its region may be too narrow once this many reads were set aside as
+/// partial and they outnumber the reads measured.
+const MIN_PARTIAL_FOR_WARNING: u32 = 3;
+/// Bases of a REF or ALT allele an answer spells out. A longer one (an SV written out in full)
+/// is cut to its first [`ALLELE_HEAD`] bases with its length, which `ref_length` / `alt_lengths`
+/// also give.
+const MAX_ALLELE_CHARS: usize = 60;
+const ALLELE_HEAD: usize = 20;
 
 // ---- Tool descriptions ----
 
@@ -108,11 +124,20 @@ fn files_schema() -> Value {
 
 fn filter_schema() -> Value {
     json!({
-        "filter": {"type": "string", "description": "Keep only reads matching this expression, e.g. \"mapq >= 20 && !dup\" or \"hp == 1\". Fields: mapq, flag, start, end, len, tlen, insert, strand, reverse, dup, secondary, supplementary, qcfail, paired, proper, read1, read2, mate_unmapped, mate_elsewhere, hp, rg, name, mismatches, deletions, insertions, clips, mods, split; operators && || ! == != < <= > >= ~ (contains) & (bits)."},
+        "filter": {"type": "string", "description": "Keep only reads matching this expression, e.g. \"mapq >= 20 && !dup\", \"hp == 1\", or \"!hp\" for reads with no HP tag (a missing tag equals nothing, so \"hp == 0\" matches none). Fields: mapq, flag, start, end, len, tlen, insert, strand, reverse, dup, secondary, supplementary, qcfail, paired, proper, read1, read2, mate_unmapped, mate_elsewhere, hp, rg, name, mismatches, deletions, insertions, clips, mods, split; operators && || ! == != < <= > >= ~ (contains) & (bits)."},
         "min_mapq": {"type": "integer", "minimum": 0, "maximum": 255, "description": "Minimum mapping quality (default 0)."},
         "include_duplicates": {"type": "boolean", "description": "Count duplicate reads (default false: dropped, like IGV and samtools)."},
         "exclude_flags": {"type": ["string", "integer"], "description": "Drop reads with any of these SAM flag bits, e.g. \"0x704\" (the default: unmapped, secondary, QC-fail, duplicate) or \"0xF04\" to drop supplementary too. Overrides include_duplicates."},
         "min_base_quality": {"type": "integer", "minimum": 0, "maximum": 255, "description": "Bases below this quality are not counted (default 0)."}
+    })
+}
+
+/// `compare`'s read filters for one of its two files, in place of the call's own.
+fn per_file_filters(which: &str) -> Value {
+    json!({
+        "type": "object",
+        "description": format!("Read filters for `{which}` alone, in place of the call's own (e.g. {{\"filter\": \"hp == 1\"}} against {{\"filter\": \"hp == 2\"}} compares one file's haplotypes)."),
+        "properties": {"filter": {"type": "string"}, "min_mapq": {"type": "integer", "minimum": 0, "maximum": 255}, "include_duplicates": {"type": "boolean"}, "exclude_flags": {"type": ["string", "integer"]}, "min_base_quality": {"type": "integer", "minimum": 0, "maximum": 255}},
     })
 }
 
@@ -130,7 +155,32 @@ fn tool(name: &str, title: &str, description: &str, input: Value) -> Value {
     json!({"name": name, "title": title, "description": description, "inputSchema": input, "annotations": {"readOnlyHint": true, "openWorldHint": false}})
 }
 
+/// The arguments every data tool reads to find its files and place a locus (contig names and
+/// lengths come from the alignment file or the reference; a region given as a gene name, from
+/// the annotations). Published for each tool, so that naming one is never refused as unknown.
+fn add_file_arguments(tool: &mut Value) {
+    let common = json!({
+        "bams": {"type": "array", "items": {"type": "string"}, "description": "Alignment files (BAM/CRAM). Default: the server's."},
+        "bam": {"type": "string", "description": "One alignment file: the same as `bams` with one item."},
+        "reference": {"type": "string", "description": "Indexed reference FASTA (or .2bit). Default: the server's."},
+        "genes": {"type": "array", "items": {"type": "string"}, "description": "Annotations (GTF/GFF3/BED), for a region given as a gene name. Default: the server's."},
+    });
+    let (Some(props), Value::Object(common)) = (tool["inputSchema"]["properties"].as_object_mut(), common) else { return };
+    for (name, schema) in common {
+        props.entry(name).or_insert(schema);
+    }
+}
+
 pub fn list() -> Vec<Value> {
+    let mut tools = data_tools();
+    // `info` and `open` take a list of files of any kind instead.
+    for tool in tools.iter_mut().filter(|t| t["name"] != "info" && t["name"] != "open") {
+        add_file_arguments(tool);
+    }
+    tools
+}
+
+fn data_tools() -> Vec<Value> {
     let locus = json!({"locus": {"type": "string", "description": "A base, e.g. chr17:43,092,919 (1-based)."}});
     let region = json!({"region": {"type": "string", "description": "e.g. chr17:43,090,000-43,100,000 (1-based, inclusive)."}});
     vec![
@@ -160,7 +210,7 @@ pub fn list() -> Vec<Value> {
         tool(
             "reads",
             "Reads, grouped",
-            "Reads at a base or in a region (up to 100 kb), grouped by allele at the base (default for a base), strand, HP tag (haplotype), allele-based phase, or not at all. Each group: count, strands, median MAPQ, insert size, soft clips, and (at a base) median distance from the read end. Raw reads are listed only when `list` is given (at most 50 per group).",
+            "Reads at a base or in a region (up to 100 kb), grouped by allele at the base (default for a base), strand, HP tag (haplotype), allele-based phase (with a note when the reads fall into several phase blocks: A and B only match up within one), or not at all. Each group: count, strands, median MAPQ, insert size, soft clips, and (at a base) median distance from the read end. Raw reads are listed only when `list` is given (at most 50 per group).",
             schema(&[], &[locus, region.clone(), json!({"bam": {"type": "string"}, "reference": {"type": "string"}, "group_by": {"type": "string", "enum": ["allele", "strand", "haplotype", "phase", "none"]}, "list": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Raw reads to list per group (default 0)."}}), filter_schema()]),
         ),
         tool(
@@ -208,20 +258,21 @@ pub fn list() -> Vec<Value> {
         tool(
             "repeats",
             "Tandem repeat lengths",
-            "How long a tandem repeat is in the reads (e.g. HTT CAG, FMR1 CGG, a VNTR): for every alignment file, each read that spans the repeat `region` with flank on both sides gives its length on that read's haplotype (read bases between the repeat's ends). Returns the reference length, the alleles (one, or two split at the largest gap; with phased reads one per HP tag, untagged reads joining the one they match and forming their own allele when two or more match neither (a lone one is counted as `unassigned`); every spanning read is in one or in `unassigned`: median length, range, reads, HP split, change from the reference, and copies of `motif` if given), the median length per HP tag, and reads that end inside the repeat (too short to measure it). Long reads span most repeats whole, so expansions are measured, not inferred.",
+            "How long a tandem repeat is in the reads (e.g. HTT CAG, FMR1 CGG, a VNTR): for every alignment file, each read that spans the repeat `region` with flank on both sides gives its length on that read's haplotype (read bases between the repeat's ends). Returns the reference length, the alleles (unphased reads: one per cluster of read lengths, each of two reads or more, so a diploid sample's two alleles and any mosaic third; with phased reads one per HP tag, untagged reads joining the one they match and forming their own allele when two or more match neither (a lone one is counted as `unassigned`); every spanning read is in one or in `unassigned`: median length, range, reads, HP split, change from the reference, and copies of `motif` if given), the median length per HP tag, and reads that end inside the repeat (too short to measure it), with a `warning` when they outnumber the reads measured (the region is probably narrower than the repeat tract). Long reads span most repeats whole, so expansions are measured, not inferred.",
             schema(&["region"], &[json!({"region": {"type": "string", "description": "The repeat itself, e.g. chr4:3,074,877-3,074,939 (1-based, inclusive)."}, "motif": {"type": "string", "description": "The repeat unit, e.g. CAG: copies are reported as length / motif length."}, "list": {"type": "boolean", "description": "Also list every read's length (default false)."}}), files_schema(), filter_schema()]),
         ),
         tool(
             "phase",
             "Haplotypes from the reads",
-            "Splits reads into two haplotypes by the alleles they carry at heterozygous sites found in the region (up to 100 kb; needs a reference). Returns the sites, phase blocks (each site's block, and per block its span and reads per haplotype: A and B only match up within a block), reads per haplotype, and per site which allele each haplotype carries. Agrees with trio phasing on the HG002 fixtures.",
-            schema(&["region"], &[json!({"region": {"type": "string"}, "bam": {"type": "string"}, "reference": {"type": "string"}}), filter_schema()]),
+            "Splits reads into two haplotypes by the alleles they carry at heterozygous sites found in the region (up to 100 kb; needs a reference). Returns the phase blocks (per block its span, sites and reads per haplotype: A and B only match up within a block), reads per haplotype, and for the first `max_sites` sites their block and which allele each haplotype carries (`het_sites` is the count of all of them). Agrees with trio phasing on the HG002 fixtures.",
+            schema(&["region"], &[json!({"region": {"type": "string"}, "bam": {"type": "string"}, "reference": {"type": "string"}, "max_sites": {"type": "integer", "minimum": 0, "maximum": MAX_PHASE_SITES, "description": "Sites to list, leftmost first (default 50; a repeat-rich region has hundreds)."}}), filter_schema()]),
         ),
         tool(
             "compare",
             "Differences between two files",
             "Positions in a region (up to 1 Mb) where an allele's fraction differs between two alignment files (e.g. tumor and normal) by more than a threshold, with enough depth in both: the allele (A, C, G, T, N, DEL, or INS for reads with an insertion right after the base), both fractions and depths. The region is read against `a` and `b`.",
-            schema(&["region"], &[json!({"region": {"type": "string"}, "a": {"type": "string", "description": "Default: the first default BAM."}, "b": {"type": "string", "description": "Default: the second."}, "threshold": {"type": "number", "minimum": 0.01, "maximum": 1.0, "description": "Default 0.2."}, "min_depth": {"type": "integer", "minimum": 1, "maximum": 4294967295u64, "description": "Default 10."}, "max": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Default 50."}, "reference": {"type": "string"}}), filter_schema()]),
+            schema(&["region"], &[json!({"region": {"type": "string"}, "a": {"type": "string", "description": "Default: the first default BAM."}, "b": {"type": "string", "description": "Default: the second."}, "threshold": {"type": "number", "minimum": 0.01, "maximum": 1.0, "description": "Default 0.2."}, "min_depth": {"type": "integer", "minimum": 1, "maximum": 4294967295u64, "description": "Default 10."}, "max": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Default 50."}, "reference": {"type": "string"},
+                "a_filters": per_file_filters("a"), "b_filters": per_file_filters("b")}), filter_schema()]),
         ),
         tool(
             "signal",
@@ -242,6 +293,17 @@ pub fn list() -> Vec<Value> {
 
 fn region_schema_for_signal() -> Value {
     json!({"region": {"type": "string", "description": "e.g. chr17:43,090,000-43,100,000 or chr17 (1-based, inclusive)."}})
+}
+
+/// A pane's state as the reply to a command that changed it (`navigate`, `display`, `open`):
+/// without the per-file assembly table, which `view` gives and which only matters here when
+/// the files disagree.
+fn pane_reply(mut pane: Value) -> Value {
+    let agree = pane["assembly"]["conflicts"].as_array().is_none_or(Vec::is_empty);
+    if agree && let Some(p) = pane.as_object_mut() {
+        p.remove("assembly");
+    }
+    pane
 }
 
 fn pane_check(state: &Value, pane: u64) -> Result<()> {
@@ -304,6 +366,14 @@ fn bool_arg(v: &Value, key: &str) -> Result<Option<bool>> {
 
 fn str_arg<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+}
+
+/// An error opening `path`, with the path in front unless its message names the file already
+/// (most do: said twice, the path reads as two failures).
+fn named(e: impl Into<anyhow::Error>, path: &Path) -> anyhow::Error {
+    let e = e.into();
+    let shown = path.display().to_string();
+    if format!("{e:#}").contains(&shown) { e } else { e.context(shown) }
 }
 
 fn file_name(p: &Path) -> String {
@@ -561,7 +631,7 @@ impl State {
             self.bams.retain(|(p, _), _| p != path);
         }
         if !self.bams.contains_key(&key) {
-            let b = BamFile::open_with_reference(path, reference).with_context(|| path.display().to_string())?;
+            let b = BamFile::open_with_reference(path, reference).map_err(|e| named(e, path))?;
             self.bams.insert(key.clone(), b);
         }
         Ok(self.bams.get_mut(&key).expect("inserted"))
@@ -587,7 +657,7 @@ impl State {
             self.vcfs.remove(path);
         }
         if !self.vcfs.contains_key(path) {
-            let f = VariantFile::open(path).with_context(|| path.display().to_string())?;
+            let f = VariantFile::open(path).map_err(|e| named(e, path))?;
             self.vcfs.insert(path.to_owned(), f);
         }
         Ok(self.vcfs.get_mut(path).expect("inserted"))
@@ -600,7 +670,7 @@ impl State {
         if let Some(a) = self.annotations.get(path) {
             return Ok(a.clone());
         }
-        let a = Arc::new(Annotation::open(path).with_context(|| path.display().to_string())?);
+        let a = Arc::new(Annotation::open(path).map_err(|e| named(e, path))?);
         self.annotations.insert(path.to_owned(), a.clone());
         Ok(a)
     }
@@ -821,7 +891,7 @@ impl State {
             tool(
                 "queue",
                 "Review queue",
-                "A list of places to step through and decide pass, fail or unsure, as the window's Review queue does. `open` a list file at `path` (BED, VCF, or one locus per line) or `paste` `text`; `decide` the current item (`decision`, optional `note`; saves and moves to the next undecided item); `note`; `next`, `prev`, `next_undecided`, or `go` to item `index` (1-based); `export` the decisions to `path` (.bed or .tsv; a file open in GGV, or its index, is refused); `stop`. Returns the queue: position, counts, the file decisions are saved in, and every item with its decision. Reopening the same list resumes its decisions.",
+                "A list of places to step through and decide pass, fail or unsure, as the window's Review queue does. `open` a list file at `path` (BED, VCF, or one locus per line) or `paste` `text`; `decide` the current item (`decision`, optional `note`; saves and moves to the next undecided item); `note`; `next`, `prev`, `next_undecided`, or `go` to item `index` (1-based); `export` the decisions to `path` (.bed or .tsv; a file open in GGV, or its index, is refused); `stop`. Returns the queue: position, counts, the file decisions are saved in, every item with its decision, and how many lines of the list were not places (`lines_not_understood`). Reopening the same list resumes its decisions.",
                 schema(&[], &[json!({
                     "action": {"type": "string", "enum": ["status", "open", "paste", "decide", "note", "next", "prev", "next_undecided", "go", "export", "stop"]},
                     "path": {"type": "string"}, "text": {"type": "string"},
@@ -835,7 +905,7 @@ impl State {
             tool(
                 "panes",
                 "Split view",
-                "The GGV window's panes (side-by-side views of the same files): `list` (default); `split` adds a pane at `locus` (else where the target pane is; at most 4); `close` closes the target `pane`; `activate` makes it the one the person's keys and the toolbar act on; `link` sets whether panes scroll and zoom together (`linked`). Returns the pane count, each pane's region, the active pane and whether linked; a new pane reaches its locus as it loads, so its region is right once `view` reports it `ready`.",
+                "The GGV window's panes (side-by-side views of the same files): `list` (default); `split` adds a pane at `locus` (else where the target pane is; at most 4); `close` closes the target `pane`; `activate` makes it the one the person's keys and the toolbar act on; `link` sets whether panes scroll and zoom together (`linked`). Returns the pane count, each pane's region, the active pane and whether linked; a new pane reaches its locus as it loads: until then its `region` is null and `going_to` says where it was sent (`view` reports it `ready` once there).",
                 schema(&[], &[json!({
                     "action": {"type": "string", "enum": ["list", "split", "close", "activate", "link"]},
                     "locus": {"type": "string"}, "linked": {"type": "boolean"}
@@ -950,7 +1020,7 @@ impl State {
                 let state = desktop.command(w.pid, "display", params).map_err(|e| anyhow!(e))?;
                 let before = state["before"].clone();
                 let after = super::desktop::Window { pid: w.pid, state };
-                let mut p = after.pane(pane).map_err(|e| anyhow!(e))?.clone();
+                let mut p = pane_reply(after.pane(pane).map_err(|e| anyhow!(e))?.clone());
                 p["window"] = json!(w.pid);
                 p["before"] = before;
                 return Ok(Output::Json(p));
@@ -1003,7 +1073,7 @@ impl State {
                 }
                 let state = desktop.command(w.pid, method, params).map_err(|e| anyhow!(e))?;
                 let after = super::desktop::Window { pid: w.pid, state };
-                let mut p = after.pane(None).map_err(|e| anyhow!(e))?.clone();
+                let mut p = pane_reply(after.pane(None).map_err(|e| anyhow!(e))?.clone());
                 p["window"] = json!(w.pid);
                 return Ok(Output::Json(p));
             }
@@ -1033,7 +1103,7 @@ impl State {
             }
             let state = self.desktop.as_mut().expect("attached").command(w.pid, "open", params).map_err(|e| anyhow!(e))?;
             let after = super::desktop::Window { pid: w.pid, state };
-            let mut p = after.pane(None).map_err(|e| anyhow!(e))?.clone();
+            let mut p = pane_reply(after.pane(None).map_err(|e| anyhow!(e))?.clone());
             p["window"] = json!(w.pid);
             p["note"] = json!("opened in the GGV window (files load in the background; `view` shows when they are ready)");
             return Ok(Output::Json(p));
@@ -1471,16 +1541,16 @@ warning: {}", w.join("; ")) },
                     warnings.push(format!(
                         "{}: REF {} at {}:{} does not match the reference ({}); its consequences assume the VCF's REF",
                         file_name(&path),
-                        v.reference,
+                        allele_text(&v.reference),
                         region.contig,
                         v.start + 1,
-                        String::from_utf8_lossy(&found)
+                        allele_text(&String::from_utf8_lossy(&found))
                     ));
                 }
                 for a in v.alts.iter().filter(|a| *a != "*" && *a != "." && *a != "<*>" && *a != "<NON_REF>") {
                     match unannotatable(&v.reference, a) {
                         None => changes.push((v.start, v.reference.clone(), a.clone(), file_name(&path))),
-                        Some(what) => not_annotated.push(json!({"change": format!("{}:{} {}>{}", region.contig, v.start + 1, v.reference, a), "from": file_name(&path),
+                        Some(what) => not_annotated.push(json!({"change": format!("{}:{} {}>{}", region.contig, v.start + 1, allele_text(&v.reference), allele_text(a)), "from": file_name(&path),
                             "reason": format!("{what} doesn't say which bases change, so its effect on a transcript isn't computed; the genes here are listed")})),
                     }
                 }
@@ -1506,7 +1576,7 @@ warning: {}", w.join("; ")) },
                 for t in shown {
                     let c = coding::consequence(t, *p, r, a, |q| self.base_at(&fetch_args, &region.contig, q));
                     if let Some(c) = c {
-                        let mut v = json!({"gene": c.gene, "transcript": c.transcript, "hgvs_c": c.hgvs_c, "hgvs_p": c.hgvs_p, "effect": c.effect, "where": c.location.feature, "change": format!("{}:{} {}>{}", region.contig, p + 1, r, a), "from": source});
+                        let mut v = json!({"gene": c.gene, "transcript": c.transcript, "hgvs_c": c.hgvs_c, "hgvs_p": c.hgvs_p, "effect": c.effect, "where": c.location.feature, "change": format!("{}:{} {}>{}", region.contig, p + 1, allele_text(r), allele_text(a)), "from": source});
                         if !c.warnings.is_empty() {
                             v["warnings"] = json!(c.warnings);
                         }
@@ -1525,6 +1595,9 @@ warning: {}", w.join("; ")) },
         }
 
         let mut out = json!({"locus": format!("{}:{}", region.contig, pos + 1), "ref": ref_base.map(|b| (b as char).to_string()), "tracks": tracks});
+        if ref_base.is_none() {
+            out["no_reference"] = json!(NO_REFERENCE_EVIDENCE);
+        }
         if !records.is_empty() {
             out["variants"] = json!(records);
         }
@@ -1622,6 +1695,11 @@ warning: {}", w.join("; ")) },
         });
         if let Some((p, _)) = &phasing {
             result["phase"] = json!({"het_sites": p.sites.len(), "blocks": p.blocks});
+            if p.blocks > 1 {
+                // The two groups hold every block's A and B, which are one haplotype each only
+                // within a block.
+                result["phase"]["note"] = json!("several phase blocks: A and B match up only within a block, so the groups are not one haplotype each across the region. `phase` gives each block's span and reads");
+            }
         }
         Ok(result)
     }
@@ -1657,7 +1735,11 @@ warning: {}", w.join("; ")) },
             }
             out.push(v);
         }
-        Ok(json!({"query": {"region": text, "reference": reference, "filters": filters_json(&opts)}, "results": out}))
+        let mut answer = json!({"query": {"region": text, "reference": reference, "filters": filters_json(&opts)}, "results": out});
+        if seq.is_none() {
+            answer["no_reference"] = json!(NO_REFERENCE_SUMMARY);
+        }
+        Ok(answer)
     }
 
     fn coverage(&mut self, args: &Value) -> Result<Value> {
@@ -1825,7 +1907,7 @@ warning: {}", w.join("; ")) },
                 .take(max)
                 .map(|t| {
                     let mut v = json!({
-                        "gene": t.gene_name, "gene_id": t.gene_id, "transcript": ggv_annot::without_copy_suffix(&t.id), "biotype": t.biotype, "contig": ann.contig_names()[t.contig as usize],
+                        "gene": t.gene_name, "gene_id": t.gene_id, "transcript": ggv_annot::without_copy_suffix(&t.id), "biotype": (!t.biotype.is_empty()).then_some(&t.biotype), "contig": ann.contig_names()[t.contig as usize],
                         "strand": match t.strand { ggv_annot::Strand::Forward => "+", ggv_annot::Strand::Reverse => "-", ggv_annot::Strand::Unknown => "." },
                         "start": t.start + 1, "end": t.end, "exons": t.exons.len(),
                         "coding": t.cds.map(|(s, e)| json!({"start": s + 1, "end": e, "length": t.cds_len()})),
@@ -1948,6 +2030,17 @@ warning: {}", w.join("; ")) },
             });
             if r.unassigned > 0 {
                 f["unassigned"] = json!(r.unassigned);
+            }
+            // Few reads measured and many set aside is what a region narrower than the repeat
+            // tract looks like: an indel placed at the tract's other end falls on a flank.
+            if r.partial >= MIN_PARTIAL_FOR_WARNING && r.partial > r.spanning {
+                f["warning"] = json!(format!(
+                    "only {} of {} reads here span the region with {} aligned bases either side; the other {} end inside it or have an indel on a flank. If the region is part of a longer repeat tract, give the whole tract: aligners may place a length change anywhere in it",
+                    r.spanning,
+                    r.spanning + r.partial,
+                    ggv_query::repeat_flank(),
+                    r.partial
+                ));
             }
             if list {
                 f["read_lengths"] = json!(r.reads.iter().map(|x| json!([x.length, x.haplotype])).collect::<Vec<_>>());
@@ -2220,10 +2313,12 @@ warning: {}", w.join("; ")) },
         let view = load_view(bam, &local, Some(seq.clone()), String::new(), &ViewOptions { filters: opts.clone(), max_rows: 0, ..Default::default() })?;
         let reads = view.reads.as_ref().map(|(r, _)| r.as_slice()).unwrap_or(&[]);
         let p = ggv_layout::phase::phase(reads, &(0..reads.len()).collect::<Vec<_>>());
+        let max_sites = uint_or(args, "max_sites", DEFAULT_PHASE_SITES)?.min(MAX_PHASE_SITES) as usize;
         let sites: Vec<Value> = p
             .sites
             .iter()
             .zip(&p.site_blocks)
+            .take(max_sites)
             .map(|(&(pos, alt), &block)| {
                 let r = seq.get((pos - region.start) as usize).copied();
                 let mut counts = [[0u32; 2]; 2]; // [hap A, hap B] x [ref, alt]
@@ -2253,15 +2348,40 @@ warning: {}", w.join("; ")) },
         Ok(json!({
             "query": {"bam": path, "region": text, "filters": filters_json(&opts)},
             "reads": reads.len(), "phase_A": a, "phase_B": b, "unphased": reads.len() - a - b,
-            "het_sites": sites.len(), "blocks": p.blocks,
+            "het_sites": p.sites.len(), "blocks": p.blocks,
             "note": "A and B are consistent within a block, not across blocks: compare sites (and reads) only within one `block`. phase_A/phase_B at the top add up every block; each block lists its own. A_reads/B_reads are [ref, alt] counts. A block's start and end are its first and last sites (1-based).",
             "phase_blocks": blocks,
+            "sites_shown": sites.len(),
+            "sites_truncated": (sites.len() < p.sites.len()).then(|| format!("the leftmost {} of {} sites: raise `max_sites` (up to {MAX_PHASE_SITES}) or narrow the region for the rest", sites.len(), p.sites.len())),
             "sites": sites,
         }))
     }
 
     fn compare(&mut self, args: &Value) -> Result<Value> {
+        // Each file's filters: its own (`a_filters` / `b_filters`) where given, else the call's.
+        let own_filters = |key: &str| -> Result<Option<Value>> {
+            match args.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::Object(own)) => {
+                    let mut merged = args.clone();
+                    if let Some(m) = merged.as_object_mut() {
+                        for k in ["filter", "min_mapq", "include_duplicates", "exclude_flags", "min_base_quality"] {
+                            m.remove(k);
+                        }
+                        m.extend(own.clone());
+                    }
+                    Ok(Some(merged))
+                }
+                Some(other) => bail!("`{key}` must be an object of read filters, not {other}"),
+            }
+        };
         let opts = self.read_filters(args)?;
+        let per_file = [own_filters("a_filters")?, own_filters("b_filters")?];
+        let file_opts = [
+            per_file[0].as_ref().map(|f| self.read_filters(f)).transpose()?.unwrap_or_else(|| opts.clone()),
+            per_file[1].as_ref().map(|f| self.read_filters(f)).transpose()?.unwrap_or_else(|| opts.clone()),
+        ];
+        let same_filters = per_file.iter().all(Option::is_none) || filters_json(&file_opts[0]) == filters_json(&file_opts[1]);
         let text = str_arg(args, "region").ok_or_else(|| anyhow!("give a `region`"))?.to_owned();
         // The pair first, then the region against them: an unrelated default file must neither
         // refuse the region nor shorten it.
@@ -2289,11 +2409,11 @@ warning: {}", w.join("; ")) },
         // Per position: reads per allele (A, C, G, T, N, DEL), reads with an insertion after
         // the base, and depth.
         let mut counts: Vec<Vec<Option<([u32; 6], u32, u32)>>> = Vec::new();
-        for path in [&a, &b] {
+        for (path, opts) in [&a, &b].into_iter().zip(&file_opts) {
             let bam = self.bam(path, reference.as_ref())?;
             let local = bam.resolve_str(&format!("{}:{}-{}", region.contig, region.start + 1, region.end)).with_context(|| path.display().to_string())?;
             let mut v = vec![None; region.len() as usize];
-            ggv_query::pileup(bam, &local, seq.as_deref(), &opts, |s| {
+            ggv_query::pileup(bam, &local, seq.as_deref(), opts, |s| {
                 if let Some(slot) = v.get_mut((s.pos - 1 - local.start) as usize) {
                     let x = &s.bases;
                     *slot = Some(([x.a.total, x.c.total, x.g.total, x.t.total, x.n.total, s.deletions.total], s.insertions_after.total, s.depth));
@@ -2349,11 +2469,12 @@ warning: {}", w.join("; ")) },
             }
         }
         Ok(json!({
-            "query": {"a": a, "b": b, "region": text, "compared": region.to_string(), "threshold": threshold, "min_depth": min_depth, "filters": filters_json(&opts),
+            "query": {"a": a, "b": b, "region": text, "compared": region.to_string(), "threshold": threshold, "min_depth": min_depth,
+                      "filters": if same_filters { filters_json(&file_opts[0]) } else { json!({"a": filters_json(&file_opts[0]), "b": filters_json(&file_opts[1])}) },
                       "alleles": "A, C, G, T, N, DEL (per base) and INS (an insertion after the base)"},
             "differences": total,
             "shown": sites,
-            "warning": same_file(&a, &b).then_some("`a` and `b` are the same file: no differences is expected, not a finding"),
+            "warning": (same_file(&a, &b) && same_filters).then_some("`a` and `b` are the same file under the same filters: no differences is expected, not a finding"),
         }))
     }
 
@@ -2491,6 +2612,15 @@ warning: {}", w.join("; ")) },
     }
 }
 
+/// An allele as answers spell it: whole when short, else its first bases and its length.
+/// Symbolic alleles and breakends are never cut.
+fn allele_text(allele: &str) -> String {
+    if allele.len() <= MAX_ALLELE_CHARS || !coding::is_sequence(allele) {
+        return allele.to_owned();
+    }
+    format!("{}… ({} bp)", &allele[..ALLELE_HEAD], allele.len())
+}
+
 fn variant_json(v: &ggv_io::Variant, samples: &[String], path: &Path) -> Value {
     let gts: serde_json::Map<String, Value> = samples
         .iter()
@@ -2498,14 +2628,20 @@ fn variant_json(v: &ggv_io::Variant, samples: &[String], path: &Path) -> Value {
         .map(|(s, c)| (s.clone(), json!({"gt": c.gt, "dp": c.dp, "gq": c.gq, "ad": if c.ad.is_empty() { Value::Null } else { json!(c.ad) }})))
         .collect();
     let info: String = v.info.chars().take(200).collect();
+    let alts: Vec<String> = v.alts.iter().map(|a| allele_text(a)).collect();
     let mut out = json!({
         "file": file_name(path),
         "path": path,
         "pos": v.start + 1, "id": if v.id.is_empty() || v.id == "." { Value::Null } else { json!(v.id) },
-        "ref": v.reference, "alt": v.alts, "type": v.kind(),
-        "qual": v.qual, "filter": if v.filters.is_empty() { json!(".") } else { json!(v.filters.join(",")) },
+        "ref": allele_text(&v.reference), "alt": alts, "type": v.kind(),
+        // QUAL is a 32-bit float in the file: printed as one, not widened into noise digits.
+        "qual": v.qual.map(|q| round(f64::from(q), 2)), "filter": if v.filters.is_empty() { json!(".") } else { json!(v.filters.join(",")) },
         "af": v.af, "genotypes": gts, "info": info,
     });
+    if v.reference.len() > MAX_ALLELE_CHARS || v.alts.iter().any(|a| a.len() > MAX_ALLELE_CHARS) {
+        out["ref_length"] = json!(v.reference.len());
+        out["alt_lengths"] = json!(v.alts.iter().map(|a| coding::is_sequence(a).then_some(a.len())).collect::<Vec<_>>());
+    }
     if v.alts.len() > 1 {
         out["alt_types"] = json!(v.alts.iter().map(|a| v.alt_kind(a)).collect::<Vec<_>>());
         out["alt_af"] = json!(v.alt_af);
@@ -2678,15 +2814,7 @@ fn pick_transcripts(ts: Vec<&ggv_annot::Transcript>, all: bool) -> (Vec<&ggv_ann
     if all {
         return (ts, 0);
     }
-    let rank = |t: &ggv_annot::Transcript| (t.representative, !ggv_annot::is_predicted(&t.id), t.cds.is_some(), t.cds_len());
-    let mut out: Vec<&ggv_annot::Transcript> = Vec::new();
-    for t in &ts {
-        match out.iter().position(|o| o.gene_id == t.gene_id) {
-            Some(i) if rank(t) > rank(out[i]) => out[i] = t,
-            Some(_) => {}
-            None => out.push(t),
-        }
-    }
+    let out = ggv_annot::one_per_gene(ts.iter().copied());
     let hidden = ts.len() - out.len();
     (out, hidden)
 }

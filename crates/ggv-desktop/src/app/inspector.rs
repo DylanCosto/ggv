@@ -118,14 +118,20 @@ pub(super) fn placed<'a>(ctx: &egui::Context, window: egui::Window<'a>, id: egui
     if settled {
         ctx.data_mut(|d| d.insert_temp(key, held + 1));
     }
-    let width = ctx.memory(|m| m.area_rect(id)).map_or(0.0, |r| r.width());
-    let left_top = egui::pos2(pos.x - pivot.x().to_factor() * width, pos.y);
+    let size = ctx.memory(|m| m.area_rect(id)).map_or(egui::Vec2::ZERO, |r| r.size());
+    let left_top = egui::pos2(pos.x - pivot.x().to_factor() * size.x, pos.y - pivot.y().to_factor() * size.y);
     if let Some(mut state) = egui::AreaState::load(ctx, id) {
         state.pivot = egui::Align2::LEFT_TOP;
         state.pivot_pos = Some(left_top);
         ctx.memory_mut(|m| m.areas_mut().set_state(egui::LayerId::new(egui::Order::Middle, id), state));
     }
     window.default_pos(left_top)
+}
+
+/// Has [`placed`] put the window `id` at its spot again the next time it is shown, as if it had
+/// never been open (for a window that would otherwise come back over what was just clicked).
+pub(super) fn place_again(ctx: &egui::Context, id: egui::Id) {
+    ctx.data_mut(|d| d.remove::<u8>(id.with("placed")));
 }
 
 impl Layout {

@@ -658,3 +658,118 @@ fn svs_counts_a_smaller_deletion_as_the_reads_allele() {
     assert_eq!((reads["genotype"].as_str(), reads["supporting"].as_u64(), reads["reference"].as_u64()), (Some("1/1"), Some(28), Some(4)), "{rec}");
     assert_eq!(reads["by_haplotype"]["reference"]["1"], 0, "{rec}");
 }
+
+#[test]
+fn answers_without_a_reference_say_what_that_changes() {
+    let d = Dir::new("no-ref");
+    let r = bases(300);
+    let fa = fasta(&d, "ref.fa", &[("chrQA", &r)]);
+    // Every read carries another base at 120: a homozygous change.
+    let one = bam(&d, "hom.bam", &[("chrQA", 300)], &reads("r", &r, "chrQA", 101, 50, 10, Some((10, 120))));
+    let mut srv = server(Defaults { bams: vec![one], ..Default::default() });
+    let bare = call(&mut srv, "evidence", json!({"locus": "chrQA:120"})).unwrap();
+    assert!(bare["results"][0]["ref"].is_null() && bare["results"][0]["no_reference"].as_str().unwrap().contains("most common one may be it"), "{bare}");
+    let summary = call(&mut srv, "summarize", json!({"region": "chrQA:101-150"})).unwrap();
+    assert_eq!(summary["results"][0]["variable_site_count"], 0, "{summary}");
+    assert!(summary["no_reference"].as_str().unwrap().contains("homozygous variants are not among them"), "{summary}");
+    // With the reference, the change is found and nothing is noted.
+    let with = call(&mut srv, "evidence", json!({"locus": "chrQA:120", "reference": s(&fa)})).unwrap();
+    assert!(with["results"][0].get("no_reference").is_none() && with["results"][0]["ref"].is_string(), "{with}");
+    let summary = call(&mut srv, "summarize", json!({"region": "chrQA:101-150", "reference": s(&fa)})).unwrap();
+    assert!(summary.get("no_reference").is_none() && summary["results"][0]["variable_site_count"] == 1, "{summary}");
+}
+
+#[test]
+fn a_misspelt_argument_is_refused_not_dropped() {
+    let d = Dir::new("typo");
+    let r = bases(300);
+    let one = bam(&d, "a.bam", &[("chrQA", 300)], &reads("r", &r, "chrQA", 101, 50, 10, None));
+    let mut srv = server(Defaults { bams: vec![one.clone()], ..Default::default() });
+    // The misspelling used to be dropped: the call ran on the default and said nothing.
+    let e = call(&mut srv, "summarize", json!({"region": "chrQA:101-150", "fliter": "mapq >= 60"})).unwrap_err();
+    assert!(e.contains("`fliter` is not an argument") && e.contains("did you mean `filter`?"), "{e}");
+    // The files every tool finds its contigs in are arguments of every tool.
+    for tool in ["summarize", "coverage"] {
+        assert!(call(&mut srv, tool, json!({"region": "chrQA:101-150", "bam": s(&one)})).is_ok(), "{tool} takes `bam`");
+    }
+}
+
+#[test]
+fn phase_lists_as_many_sites_as_asked_and_counts_them_all() {
+    let d = Dir::new("phase-max");
+    let r = bases(400);
+    let fa = fasta(&d, "ref.fa", &[("chrQA", &r)]);
+    let mut all = Vec::new();
+    for k in 0..10 {
+        let mut seq: Vec<char> = r[100..140].chars().collect();
+        if k < 5 {
+            for at in [9, 19, 29] {
+                seq[at] = other(seq[at]); // 110, 120, 130
+            }
+        }
+        all.push(read(&format!("x{k}"), "chrQA", 101, "40M", &seq.iter().collect::<String>()));
+    }
+    let one = bam(&d, "sites.bam", &[("chrQA", 400)], &all);
+    let mut srv = server(Defaults { bams: vec![one], reference: Some(fa), ..Default::default() });
+    let out = call(&mut srv, "phase", json!({"region": "chrQA:100-150", "max_sites": 2})).unwrap();
+    assert_eq!((out["het_sites"].as_u64(), out["sites_shown"].as_u64(), out["sites"].as_array().map(Vec::len)), (Some(3), Some(2), Some(2)), "{out}");
+    assert!(out["sites_truncated"].as_str().unwrap().contains("2 of 3"), "{out}");
+    assert_eq!(out["phase_blocks"][0]["sites"], 3, "blocks count every site: {out}");
+    let all_sites = call(&mut srv, "phase", json!({"region": "chrQA:100-150"})).unwrap();
+    assert!(all_sites["sites_truncated"].is_null() && all_sites["sites_shown"] == 3, "{all_sites}");
+}
+
+#[test]
+fn long_alleles_are_cut_and_qual_is_not_widened() {
+    let d = Dir::new("long-allele");
+    let deleted = bases(200);
+    let body = format!("chrQA\t100\tsv1\t{deleted}\t{}\t45.1\tPASS\t.\nchrQA\t400\t.\tA\tC\t33.3\tPASS\t.\n", &deleted[..1]);
+    let calls = vcf(&d, "calls.vcf.gz", ("chrQA", 1000), &body);
+    let mut srv = server(Defaults { vcfs: vec![calls], ..Default::default() });
+    let out = call(&mut srv, "variants", json!({"region": "chrQA:1-1000"})).unwrap();
+    let (sv, snv) = (&out["results"][0]["shown"][0], &out["results"][0]["shown"][1]);
+    assert_eq!(sv["ref"], format!("{}… (200 bp)", &deleted[..20]), "{sv}");
+    assert_eq!((sv["ref_length"].as_u64(), sv["alt_lengths"][0].as_u64(), sv["alt"][0].as_str()), (Some(200), Some(1), Some(&deleted[..1])), "{sv}");
+    assert_eq!(sv["qual"], 45.1, "the file's float, not 45.099998…: {sv}");
+    assert!(snv.get("ref_length").is_none() && snv["ref"] == "A" && snv["qual"] == 33.3, "{snv}");
+}
+
+#[test]
+fn compare_counts_each_file_under_its_own_filters() {
+    let d = Dir::new("compare-own");
+    let r = bases(400);
+    let fa = fasta(&d, "ref.fa", &[("chrQA", &r)]);
+    // Ten reads from 100, half with another base at 120; ten more from 101, all reference.
+    let mut all = reads("alt", &r, "chrQA", 100, 50, 10, Some((5, 120)));
+    all.extend(reads("ref", &r, "chrQA", 101, 50, 10, None));
+    let one = bam(&d, "mixed.bam", &[("chrQA", 400)], &all);
+    let mut srv = server(Defaults { reference: Some(fa), ..Default::default() });
+    let same = call(&mut srv, "compare", json!({"region": "chrQA:100-149", "a": s(&one), "b": s(&one)})).unwrap();
+    assert_eq!(same["differences"], 0, "{same}");
+    assert!(same["warning"].as_str().unwrap().contains("same file"), "{same}");
+    // The same file split by where its reads start: the alt is in one half only.
+    let split = call(&mut srv, "compare", json!({"region": "chrQA:100-149", "a": s(&one), "b": s(&one), "a_filters": {"filter": "start == 100"}, "b_filters": {"filter": "start == 101"}})).unwrap();
+    assert_eq!((split["differences"].as_u64(), split["shown"][0]["pos"].as_u64()), (Some(1), Some(120)), "{split}");
+    assert_eq!((split["shown"][0]["a_fraction"].as_f64(), split["shown"][0]["b_fraction"].as_f64()), (Some(0.5), Some(0.0)), "{split}");
+    assert_eq!(split["query"]["filters"]["a"]["expression"], "start == 100", "{split}");
+    assert!(split["warning"].is_null(), "one file under two filters is a real comparison: {split}");
+}
+
+#[test]
+fn repeats_warn_when_the_region_is_narrower_than_the_tract() {
+    let d = Dir::new("repeat-narrow");
+    let r = bases(400);
+    // Eight reads delete 20 bases at 150-169, which the aligner might as well have put at
+    // 170-189: asked for 171-185 alone, they have no aligned left flank.
+    let deleting: Vec<String> = (0..8).map(|k| read(&format!("d{k}"), "chrQA", 101, "49M20D51M", &format!("{}{}", &r[100..149], &r[169..220]))).collect();
+    let whole = reads("w", &r, "chrQA", 101, 120, 2, None);
+    let one = bam(&d, "tract.bam", &[("chrQA", 400)], &[deleting, whole].concat());
+    let mut srv = server(Defaults { bams: vec![one], ..Default::default() });
+    let narrow = call(&mut srv, "repeats", json!({"region": "chrQA:171-185"})).unwrap();
+    let f = &narrow["files"][0];
+    assert_eq!((f["spanning"].as_u64(), f["partial"].as_u64()), (Some(2), Some(8)), "{narrow}");
+    assert!(f["warning"].as_str().unwrap().contains("give the whole tract"), "{narrow}");
+    let tract = call(&mut srv, "repeats", json!({"region": "chrQA:140-195"})).unwrap();
+    assert!(tract["files"][0]["warning"].is_null() && tract["files"][0]["spanning"] == 10, "{tract}");
+    assert_eq!(tract["files"][0]["alleles"].as_array().map(Vec::len), Some(2), "{tract}");
+}

@@ -219,6 +219,9 @@ impl App {
             "counts": {"pass": pass, "fail": fail, "unsure": unsure},
             "note": q.note, "file": q.save_path.as_ref().map(|p| p.display().to_string()),
             "error": q.error, "notice": q.notice, "items": items,
+            // Lines of the list that are not places: said, as the paste window and `ggv batch`
+            // say it, so a list that came out short isn't taken for the whole of it.
+            "lines_not_understood": q.skipped,
         })
     }
 
@@ -611,6 +614,47 @@ mod tests {
         app.close_variants(0);
         assert!(app.review.is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A VCF opened alone can be looked at (its header's contigs are the genome), and a file
+    /// named .bam that isn't one is opened, to say so, rather than offered an index.
+    #[test]
+    fn a_vcf_alone_defines_the_genome_and_a_text_file_is_not_offered_an_index() {
+        if !data_dir().join("HG002.revio.slices.bam").exists() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, super::super::Args::default()).unwrap();
+        assert!(app.contigs.is_empty());
+        app.add_variants(vec![data_dir().join("HG002.revio.deepvariant.phased.vcf.gz")], &ctx);
+        assert!(app.contigs.iter().any(|c| c.name == "chr20" && c.length == 64_444_167), "{:?}", app.contigs.first());
+        assert!(app.no_genome_hint().is_none());
+
+        let dir = std::env::temp_dir().join(format!("ggv-not-a-bam-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = dir.join("notes.bam");
+        std::fs::write(&text, "not alignments").unwrap();
+        assert!(!app.needs_index(&text) && app.indexing.is_empty(), "nothing to index in a file that is no BAM");
+        // A real BAM without its index is still offered one.
+        let copy = dir.join("reads.bam");
+        std::fs::copy(data_dir().join("HG002.revio.slices.bam"), &copy).unwrap();
+        assert!(app.needs_index(&copy));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An agent is told how many pasted lines were not places (the paste window says so to a
+    /// person), and its bookmarks don't open the Bookmarks window over the panels.
+    #[test]
+    fn pasted_lines_not_understood_are_counted_and_agent_bookmarks_stay_quiet() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, super::super::Args::default()).unwrap();
+        app.contigs = vec![ggv_model::Contig { name: "chr20".into(), length: 64_444_167 }];
+        let state = app.attach_queue(&json!({"action": "paste", "text": "chr20:100 first\nnot a place\nchr20:200-300\n"})).unwrap();
+        assert_eq!((state["count"].as_u64(), state["lines_not_understood"].as_u64()), (Some(2), Some(1)), "{state}");
+        assert!(!app.show_bookmarks);
+        app.attach_bookmarks(&json!({"action": "add", "locus": "chr20:100", "note": "from an agent"})).unwrap();
+        assert_eq!(app.bookmarks.borrow().len(), 1);
+        assert!(!app.show_bookmarks, "the window opens when the person asks for it");
     }
 
     /// A pasted BED row on a contig with `:` in its name (a `samtools faidx` sub-reference) goes

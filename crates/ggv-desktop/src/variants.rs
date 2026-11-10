@@ -191,7 +191,7 @@ enum Request {
     Load { id: u64, region: Region, color: SiteColor, dark: bool },
     /// Find the nearest variant strictly after (or before) `pos` on the first contig, then on
     /// each following contig in order (in the search direction).
-    Seek { id: u64, contigs: Vec<(String, u64)>, pos: u64, forward: bool },
+    Seek { id: u64, contigs: Vec<(String, u64)>, pos: u64, forward: bool, sites: Sites },
 }
 
 enum Reply {
@@ -279,7 +279,7 @@ impl VariantTrack {
                             Err(e) => Reply::Failed(e.to_string()),
                         }
                     }
-                    Request::Seek { id, contigs, pos, forward } => match seek_across(&mut file, &contigs, pos, forward) {
+                    Request::Seek { id, contigs, pos, forward, sites } => match seek_across(&mut file, &contigs, pos, forward, sites) {
                         Ok(hit) => Reply::Found { id, hit },
                         Err(e) => Reply::Failed(e.to_string()),
                     },
@@ -351,10 +351,10 @@ impl VariantTrack {
     }
 
     /// `contigs`: the current contig first, then the ones to continue into, in order.
-    pub fn seek(&mut self, contigs: Vec<(String, u64)>, pos: u64, forward: bool, next_id: &mut u64) {
+    pub fn seek(&mut self, contigs: Vec<(String, u64)>, pos: u64, forward: bool, sites: Sites, next_id: &mut u64) {
         let id = *next_id;
         *next_id += 1;
-        let _ = self.tx.send(Request::Seek { id, contigs, pos, forward });
+        let _ = self.tx.send(Request::Seek { id, contigs, pos, forward, sites });
         self.seeking = Some(id);
     }
 
@@ -446,16 +446,32 @@ fn legend_of(color: &SiteColor, variants: &[Variant], dark: bool) -> Vec<(String
     counts.iter().take(12).map(|(v, _)| (v.replace('_', " "), info_rgb_in(key, Some(v), dark))).collect()
 }
 
+/// Which records a step to the next or previous site stops at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sites {
+    #[default]
+    All,
+    /// Only records that passed the caller's filters (FILTER is `PASS` or `.`): a review that
+    /// skips the RefCall and LowQual records a caller writes beside its calls.
+    Passing,
+}
+
+impl Sites {
+    pub fn has(self, v: &Variant) -> bool {
+        self == Self::All || v.is_pass()
+    }
+}
+
 /// Seeks on the first contig from `pos`, then from the start (forward) or end (backward) of
 /// each following contig.
-fn seek_across(file: &mut VariantFile, contigs: &[(String, u64)], pos: u64, forward: bool) -> ggv_io::Result<Option<(String, u64, u64)>> {
+fn seek_across(file: &mut VariantFile, contigs: &[(String, u64)], pos: u64, forward: bool, sites: Sites) -> ggv_io::Result<Option<(String, u64, u64)>> {
     for (k, (contig, len)) in contigs.iter().enumerate() {
         let from = match (k, forward) {
             (0, _) => Some(pos),
             (_, true) => None,
             (_, false) => Some(*len),
         };
-        if let Some((s, e)) = seek(file, contig, *len, from, forward)? {
+        if let Some((s, e)) = seek(file, contig, *len, from, forward, sites)? {
             return Ok(Some((contig.clone(), s, e)));
         }
     }
@@ -465,7 +481,7 @@ fn seek_across(file: &mut VariantFile, contigs: &[(String, u64)], pos: u64, forw
 /// The nearest variant after/before `pos`, searching outwards in growing windows so a dense
 /// file answers from one small query and a sparse one still finds far-off sites.
 /// `pos: None` (forward only) means from the contig's start, including a site at position 0.
-fn seek(file: &mut VariantFile, contig: &str, contig_len: u64, pos: Option<u64>, forward: bool) -> ggv_io::Result<Option<(u64, u64)>> {
+fn seek(file: &mut VariantFile, contig: &str, contig_len: u64, pos: Option<u64>, forward: bool, sites: Sites) -> ggv_io::Result<Option<(u64, u64)>> {
     let after = |v: &ggv_io::Variant| pos.is_none_or(|p| v.start > p);
     let first = pos.map_or(0, |p| p + 1);
     let pos = pos.unwrap_or(0);
@@ -479,7 +495,8 @@ fn seek(file: &mut VariantFile, contig: &str, contig_len: u64, pos: Option<u64>,
         if start >= end {
             return Ok(None);
         }
-        let vs = file.query(&Region { contig: contig.to_owned(), start, end }, false)?;
+        let mut vs = file.query(&Region { contig: contig.to_owned(), start, end }, false)?;
+        vs.retain(|v| sites.has(v));
         let hit = if forward {
             vs.iter().filter(|v| after(v)).min_by_key(|v| v.start)
         } else {
@@ -736,29 +753,47 @@ mod tests {
     }
 
     #[test]
+    fn seek_can_skip_records_that_did_not_pass() {
+        let vcf = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/hg002-revio/HG002.revio.deepvariant.phased.vcf.gz");
+        let mut f = VariantFile::open(vcf).unwrap();
+        let len = 64_444_167;
+        // After the RefCall at 1-based 58,857,173 come two more RefCalls (58,859,005 and
+        // 58,859,628), then the first record that passed, at 58,859,981.
+        let from = Some(58_857_172);
+        let next = |f: &mut VariantFile, sites| seek(f, "chr20", len, from, true, sites).unwrap().map(|(start, _)| start + 1);
+        assert_eq!(next(&mut f, Sites::All), Some(58_859_005));
+        assert_eq!(next(&mut f, Sites::Passing), Some(58_859_981));
+        // Backwards from that one, the same three are skipped again.
+        let back = seek(&mut f, "chr20", len, Some(58_859_980), false, Sites::All).unwrap().map(|(start, _)| start + 1);
+        assert_eq!(back, Some(58_859_628));
+        let back = seek(&mut f, "chr20", len, Some(58_859_980), false, Sites::Passing).unwrap().map(|(start, _)| start + 1);
+        assert!(back.is_some_and(|p| p < 58_857_173), "{back:?}");
+    }
+
+    #[test]
     fn seek_finds_neighbours() {
         // GGV_TEST_VCF=giab.HG002.vcf.gz (the HG002 chr20 fixture) checks against known sites.
         let Ok(path) = std::env::var("GGV_TEST_VCF") else { return };
         let mut f = VariantFile::open(path).unwrap();
         let len = 64_444_167;
         // 1-based 1,895,892 and 1,896,504 are consecutive GIAB sites.
-        assert_eq!(seek(&mut f, "chr20", len, Some(1_895_891), true).unwrap(), Some((1_896_503, 1_896_504)));
-        assert_eq!(seek(&mut f, "chr20", len, Some(1_896_503), false).unwrap(), Some((1_895_891, 1_895_892)));
+        assert_eq!(seek(&mut f, "chr20", len, Some(1_895_891), true, Sites::All).unwrap(), Some((1_896_503, 1_896_504)));
+        assert_eq!(seek(&mut f, "chr20", len, Some(1_896_503), false, Sites::All).unwrap(), Some((1_895_891, 1_895_892)));
         // Contig naming without `chr` works too, and nothing lies past the end.
-        assert_eq!(seek(&mut f, "20", len, Some(1_895_891), true).unwrap(), Some((1_896_503, 1_896_504)));
-        assert_eq!(seek(&mut f, "chr20", len, Some(len - 1), true).unwrap(), None);
+        assert_eq!(seek(&mut f, "20", len, Some(1_895_891), true, Sites::All).unwrap(), Some((1_896_503, 1_896_504)));
+        assert_eq!(seek(&mut f, "chr20", len, Some(len - 1), true, Sites::All).unwrap(), None);
         // From the contig start, forward finds the first site; backward from it finds nothing.
-        let first = seek(&mut f, "chr20", len, None, true).unwrap().unwrap();
-        assert_eq!(seek(&mut f, "chr20", len, Some(first.0), false).unwrap(), None);
+        let first = seek(&mut f, "chr20", len, None, true, Sites::All).unwrap().unwrap();
+        assert_eq!(seek(&mut f, "chr20", len, Some(first.0), false, Sites::All).unwrap(), None);
 
         // Across contigs: past the end of chr19 (absent from the file) and into chr20; and
         // backward from chr21's end into chr20's last site.
         let contigs = |names: &[&str]| names.iter().map(|n| ((*n).to_owned(), len)).collect::<Vec<_>>();
-        let hit = seek_across(&mut f, &contigs(&["chr19", "chr20"]), 1000, true).unwrap().unwrap();
+        let hit = seek_across(&mut f, &contigs(&["chr19", "chr20"]), 1000, true, Sites::All).unwrap().unwrap();
         assert_eq!((hit.0.as_str(), hit.1), ("chr20", first.0));
-        let last = seek(&mut f, "chr20", len, Some(len), false).unwrap().unwrap();
-        let hit = seek_across(&mut f, &contigs(&["chr21", "chr20"]), 5, false).unwrap().unwrap();
+        let last = seek(&mut f, "chr20", len, Some(len), false, Sites::All).unwrap().unwrap();
+        let hit = seek_across(&mut f, &contigs(&["chr21", "chr20"]), 5, false, Sites::All).unwrap().unwrap();
         assert_eq!((hit.0.as_str(), hit.1), ("chr20", last.0));
-        assert_eq!(seek_across(&mut f, &contigs(&["chr21", "chr22"]), 0, true).unwrap(), None);
+        assert_eq!(seek_across(&mut f, &contigs(&["chr21", "chr22"]), 0, true, Sites::All).unwrap(), None);
     }
 }

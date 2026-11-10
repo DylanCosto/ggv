@@ -229,7 +229,7 @@ fn vcf_index_advice(path: &Path) -> String {
     let mut magic = [0u8; 2];
     let gzipped = std::fs::File::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic)).is_ok() && magic == [0x1f, 0x8b];
     if gzipped {
-        "create one with `tabix -p vcf` (or `bcftools index -t`); it must be bgzip-compressed, not plain gzip".into()
+        "create one with `ggv index` (or `tabix -p vcf`, `bcftools index -t`); it must be bgzip-compressed, not plain gzip".into()
     } else {
         "a plain-text VCF can't be indexed: compress it with `bgzip` (or `bcftools view -Oz -o x.vcf.gz`), then index that with `tabix -p vcf`".into()
     }
