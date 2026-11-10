@@ -66,3 +66,7 @@ depth, breadth at 1/10/20/30×, and the most variable sites.
 
 Defaults count what IGV shows: unmapped, secondary, QC-fail and duplicate reads are dropped
 (`--exclude-flags 0x704`), no MAPQ or base-quality floor, overlapping mates both count.
+
+Without a reference (`-f` or `--genome`), `alt_fraction`, `top_alt` and a summary's variable
+sites compare each position with its most common allele, so a homozygous variant is not
+reported as one. `query pileup` and `query summary` say so on stderr.

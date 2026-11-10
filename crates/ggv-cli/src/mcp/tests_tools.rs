@@ -660,6 +660,26 @@ fn svs_counts_a_smaller_deletion_as_the_reads_allele() {
 }
 
 #[test]
+fn answers_without_a_reference_say_what_that_changes() {
+    let d = Dir::new("no-ref");
+    let r = bases(300);
+    let fa = fasta(&d, "ref.fa", &[("chrQA", &r)]);
+    // Every read carries another base at 120: a homozygous change.
+    let one = bam(&d, "hom.bam", &[("chrQA", 300)], &reads("r", &r, "chrQA", 101, 50, 10, Some((10, 120))));
+    let mut srv = server(Defaults { bams: vec![one], ..Default::default() });
+    let bare = call(&mut srv, "evidence", json!({"locus": "chrQA:120"})).unwrap();
+    assert!(bare["results"][0]["ref"].is_null() && bare["results"][0]["no_reference"].as_str().unwrap().contains("most common one may be it"), "{bare}");
+    let summary = call(&mut srv, "summarize", json!({"region": "chrQA:101-150"})).unwrap();
+    assert_eq!(summary["results"][0]["variable_site_count"], 0, "{summary}");
+    assert!(summary["no_reference"].as_str().unwrap().contains("homozygous variants are not among them"), "{summary}");
+    // With the reference, the change is found and nothing is noted.
+    let with = call(&mut srv, "evidence", json!({"locus": "chrQA:120", "reference": s(&fa)})).unwrap();
+    assert!(with["results"][0].get("no_reference").is_none() && with["results"][0]["ref"].is_string(), "{with}");
+    let summary = call(&mut srv, "summarize", json!({"region": "chrQA:101-150", "reference": s(&fa)})).unwrap();
+    assert!(summary.get("no_reference").is_none() && summary["results"][0]["variable_site_count"] == 1, "{summary}");
+}
+
+#[test]
 fn a_misspelt_argument_is_refused_not_dropped() {
     let d = Dir::new("typo");
     let r = bases(300);

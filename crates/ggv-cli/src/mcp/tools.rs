@@ -100,6 +100,10 @@ const MAX_LOCI: usize = 50;
 /// about 100 characters each.
 const DEFAULT_PHASE_SITES: u64 = 50;
 const MAX_PHASE_SITES: u64 = 5000;
+/// Said in `evidence` when there is no reference base to tell the alleles from.
+const NO_REFERENCE_EVIDENCE: &str = "no reference base here: which allele is the variant can't be told, and the most common one may be it (a homozygous change). Pass `reference`, or start the server with -f or --genome";
+/// Said in `summarize` without a reference.
+const NO_REFERENCE_SUMMARY: &str = "no reference: variable sites are positions where an allele other than the most common one reaches the threshold, so homozygous variants are not among them. Pass `reference`, or start the server with -f or --genome";
 /// `repeats` warns that its region may be too narrow once this many reads were set aside as
 /// partial and they outnumber the reads measured.
 const MIN_PARTIAL_FOR_WARNING: u32 = 3;
@@ -1591,6 +1595,9 @@ warning: {}", w.join("; ")) },
         }
 
         let mut out = json!({"locus": format!("{}:{}", region.contig, pos + 1), "ref": ref_base.map(|b| (b as char).to_string()), "tracks": tracks});
+        if ref_base.is_none() {
+            out["no_reference"] = json!(NO_REFERENCE_EVIDENCE);
+        }
         if !records.is_empty() {
             out["variants"] = json!(records);
         }
@@ -1728,7 +1735,11 @@ warning: {}", w.join("; ")) },
             }
             out.push(v);
         }
-        Ok(json!({"query": {"region": text, "reference": reference, "filters": filters_json(&opts)}, "results": out}))
+        let mut answer = json!({"query": {"region": text, "reference": reference, "filters": filters_json(&opts)}, "results": out});
+        if seq.is_none() {
+            answer["no_reference"] = json!(NO_REFERENCE_SUMMARY);
+        }
+        Ok(answer)
     }
 
     fn coverage(&mut self, args: &Value) -> Result<Value> {

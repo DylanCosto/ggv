@@ -1276,7 +1276,10 @@ impl App {
                 ui.label(format!("soft clips starting {} / ending {} · ref skips {}", s.soft_clipped_left, s.soft_clipped_right, s.ref_skips));
             }
             if let Some(alt) = &s.top_alt {
-                ui.label(format!("top alt {} at {:.1}% ({} fwd / {} rev){}", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+                ui.label(format!("{} {} at {:.1}% ({} fwd / {} rev){}", top_alt_label(s), alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+            }
+            if !s.has_reference_base() {
+                ui.label(egui::RichText::new(NO_REFERENCE_BASE).color(warning_rgb(ui.visuals().dark_mode)));
             }
         }
         if let Some(text) = copy {
@@ -3758,6 +3761,18 @@ impl App {
         }
         painter.hline(rect.x_range(), rect.top() + RULER_H - 5.5, Stroke::new(1.0, muted));
 
+        // Alignments with no reference: said where the reference row would be, since plain grey
+        // reads otherwise look like a region with no variants.
+        if self.reference_path.is_none() && self.pending_reference.is_none() && self.pending_genome.is_none() && self.downloads.is_empty() && !self.tracks.is_empty() {
+            let genome = self.build().and_then(ggv_io::genomes::find);
+            let color = warning_rgb(self.style.dark);
+            let room = rect.width() - 12.0;
+            let fits = no_reference_hints(genome).into_iter().map(|h| painter.layout_no_wrap(h, FontId::proportional(11.0), color)).find(|g| g.size().x <= room);
+            if let Some(galley) = fits {
+                painter.galley(Pos2::new(rect.left() + 6.0, rect.top() + REF_TOP + (REF_H - galley.size().y) / 2.0), galley, color);
+            }
+        }
+
         // Reference letters.
         if self.ppb >= f64::from(LETTERS_PPB)
             && let Some((view, _, _)) = &self.reference
@@ -5001,7 +5016,11 @@ fn evidence_text(name: &str, locus: &str, s: &ggv_query::PositionStats) -> Strin
     }
     out.push_str(&format!("MAPQ mean {:.1} ({} at 0), base Q mean {:.1}\n", s.mean_mapping_quality, s.mapping_quality_zero, s.mean_base_quality));
     if let Some(alt) = &s.top_alt {
-        out.push_str(&format!("top alt {} at {:.1}% ({} fwd / {} rev){}\n", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+        out.push_str(&format!("{} {} at {:.1}% ({} fwd / {} rev){}\n", top_alt_label(s), alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev, strand_note(s)));
+    }
+    if !s.has_reference_base() {
+        out.push_str(NO_REFERENCE_BASE);
+        out.push('\n');
     }
     out
 }
@@ -5281,6 +5300,30 @@ fn error_rgb(dark: bool) -> Color32 {
 }
 
 /// The warning text colour, amber in both themes.
+/// How the Evidence panel introduces a position's `top_alt`: the top alternate against a
+/// reference base, else what it is without one.
+fn top_alt_label(s: &ggv_query::PositionStats) -> &'static str {
+    if s.has_reference_base() { "top alt" } else { "second most common" }
+}
+
+/// Said under a position's counts when there is no reference base to compare them with.
+const NO_REFERENCE_BASE: &str = "no reference base here: the commonest base may itself be a variant";
+
+/// The reference row's hint when alignments are open without a reference, and its shorter forms
+/// for narrower panes.
+fn no_reference_hints(genome: Option<&ggv_io::genomes::Genome>) -> Vec<String> {
+    const SHORT: &str = "No reference: mismatches aren't drawn";
+    let mut hints = Vec::new();
+    if let Some(g) = genome {
+        let cost = if ggv_io::genomes::cached(g).is_some() { "already downloaded".to_owned() } else { format!("{} MB, downloaded once", g.size / 1_000_000) };
+        hints.push(format!("{SHORT} and variants can't be told from the reference  ·  Open > Reference… > {} adds it ({cost})", g.name));
+        hints.push(format!("{SHORT}  ·  Open > Reference… > {}", g.name));
+    }
+    hints.push(format!("{SHORT}  ·  Open > Reference… adds one"));
+    hints.push(SHORT.to_owned());
+    hints
+}
+
 fn warning_rgb(dark: bool) -> Color32 {
     if dark { Color32::from_rgb(240, 175, 60) } else { Color32::from_rgb(160, 95, 0) }
 }

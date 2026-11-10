@@ -352,7 +352,8 @@ impl App {
                         st.mean_mapping_quality, st.mapping_quality_zero, st.mean_base_quality, st.soft_clipped_left, st.soft_clipped_right
                     ));
                     if let Some(alt) = &st.top_alt {
-                        s.lines.push(format!("top alternate {} at {:.1}% ({} forward / {} reverse)", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev));
+                        let what = if st.has_reference_base() { "top alternate" } else { "second most common (no reference base to compare with)" };
+                        s.lines.push(format!("{what} {} at {:.1}% ({} forward / {} reverse)", alt.allele, alt.fraction * 100.0, alt.count.fwd, alt.count.rev));
                         if alt.count.total >= 4 && (alt.count.fwd == 0 || alt.count.rev == 0) {
                             s.warning = Some("The alternate allele is supported by one strand only — a common artifact.".into());
                         }

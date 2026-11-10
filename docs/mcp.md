@@ -51,6 +51,9 @@ e.g. chr20)`), not protocol failures. An argument a tool doesn't take is one of 
 never dropped and the call answered for the default. Every data tool takes `bams` (or `bam`),
 `reference` and `genes` to say which files it reads.
 
+Without a reference, `evidence` and `summarize` carry a `no_reference` note: alleles can then
+only be compared with the most common one at each position, which may itself be the variant.
+
 A REF or ALT over 60 bases (a structural variant written out) is given as its first 20 and its
 length, with `ref_length` / `alt_lengths` beside it.
 

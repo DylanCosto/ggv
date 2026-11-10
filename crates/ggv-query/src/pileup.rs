@@ -295,6 +295,15 @@ impl PositionStats {
         }
     }
 
+    /// Whether there is a reference base (A, C, G or T) here to compare the reads with. Without
+    /// one (no reference given, or an `N` there) `alt_fraction` and `top_alt` are against the
+    /// most common allele instead: `top_alt` is then the second most common allele, and a
+    /// homozygous variant, the most common one, is not counted as non-reference at all.
+    #[must_use]
+    pub fn has_reference_base(&self) -> bool {
+        matches!(self.ref_base, Some('A' | 'C' | 'G' | 'T'))
+    }
+
     /// `alt_fraction` before rounding, for comparing with thresholds.
     pub fn exact_alt_fraction(&self) -> f64 {
         if self.depth == 0 { 0.0 } else { f64::from(self.non_reference) / f64::from(self.depth) }
@@ -727,6 +736,27 @@ mod tests {
         assert!(source.beyond(&read(300, 50), "chrQA", Some((&wide, 200))).is_none());
         let (seq, from) = source.beyond(&read(100, 150), "chrQA", Some((&query, 109))).unwrap();
         assert!(from <= 100 && from + seq.len() as u64 >= 250);
+    }
+
+    /// With no reference base the most common allele stands in for it, and says so: at a
+    /// homozygous change (T>G, 37 of 40 reads) the "top alt" is the three stray reads.
+    #[test]
+    fn without_a_reference_base_the_commonest_allele_stands_in() {
+        let at = |ref_base| {
+            let mut s = PositionStats { depth: 40, ref_base, ..Default::default() };
+            s.bases.g = StrandCount { total: 37, fwd: 28, rev: 9 };
+            s.bases.c = StrandCount { total: 3, fwd: 2, rev: 1 };
+            s.finish(0, 0, 0, 0);
+            s
+        };
+        let known = at(Some('T'));
+        assert!(known.has_reference_base());
+        assert_eq!((known.top_alt.as_ref().map(|a| a.allele), known.alt_fraction), (Some("G"), 1.0));
+        for missing in [None, Some('N')] {
+            let s = at(missing);
+            assert!(!s.has_reference_base());
+            assert_eq!((s.top_alt.as_ref().map(|a| a.allele), s.alt_fraction), (Some("C"), 0.075));
+        }
     }
 
     #[test]

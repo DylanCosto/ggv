@@ -1065,7 +1065,12 @@ fn open(input: &Input) -> Result<(BamFile, Region, Option<Vec<u8>>)> {
     }
     let reference = match &input.reference {
         Some(path) => Some(ReferenceFasta::open(path)?.fetch(&region)?),
-        None => None,
+        None => {
+            // On stderr, so the table stays as it was: its `alt_fraction` and `top_alt` (and a
+            // summary's variable sites) mean something else without a reference.
+            eprintln!("ggv: note: no reference (-f, or --genome): alleles are compared with the most common one at each position, so a homozygous variant is not reported as one");
+            None
+        }
     };
     Ok((bam, region, reference))
 }

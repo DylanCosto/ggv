@@ -143,6 +143,9 @@ times with it loaded: about 1 ms across all of chr17, 0.4 ms at 2 Mb, and unchan
 - **Session → Export view as PNG…** saves the tracks exactly as drawn. **Dark** switches theme.
 - **Group by base here** (right-click a base, or `--group base`): reads in bands by the base they
   carry there (A/C/G/T, deletion, not covering), for eyeballing which reads support an allele.
+- **No reference open**: the reference row says so (mismatches aren't drawn without one) and
+  names the built-in genome that matches the alignments, under **Open > Reference…**. The
+  Evidence panel then gives the second most common base in place of a top alternate.
 - **Evidence** panel: exact counts at the outlined base (click a base to outline it, click it
   again or Esc to clear; once it is panned off screen the panel follows the view's centre again)
   from the same pileup engine as `ggv query pileup`: per-track depth, bases by strand, deletions,
