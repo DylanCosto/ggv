@@ -69,12 +69,26 @@ pub struct PackOptions {
     /// Keep the parts of a split read (its primary and supplementary records, same name and
     /// mate) on one row, spanning from the first part to the last, grouped by the primary.
     pub link: bool,
+    /// Pack by the span soft clips are drawn over when shown (the clipped bases where they
+    /// would align), so shown clips don't run into the next read in the row.
+    pub soft_clips: bool,
+}
+
+impl PackOptions {
+    /// The span `r` takes up in a row: its aligned span, widened by its soft clips when shown.
+    fn span(&self, r: &AlignedRead) -> (u64, u64) {
+        if self.soft_clips {
+            (r.start.saturating_sub(u64::from(r.soft_clip_left)), r.end + u64::from(r.soft_clip_right))
+        } else {
+            (r.start, r.end)
+        }
+    }
 }
 
 /// Packs reads (in coordinate order, as a BAM query returns them) into at most `max_rows`
 /// rows, leaving at least `min_gap` bases between neighbours.
 pub fn pack(reads: &[AlignedRead], max_rows: usize, min_gap: u64) -> Packed {
-    pack_with(reads, &PackOptions { max_rows, min_gap, group: GroupBy::None, sort: None, link: false })
+    pack_with(reads, &PackOptions { max_rows, min_gap, group: GroupBy::None, sort: None, link: false, soft_clips: false })
 }
 
 /// Whether `a` and `b` are parts of one split read: same name, same mate (first / second).
@@ -115,13 +129,14 @@ fn leader(reads: &[AlignedRead], unit: &[usize]) -> usize {
 
 /// First-fit packing of whole units (a unit spans its first part's start to its last part's
 /// end, and its parts share a row).
-fn first_fit_units(reads: &[AlignedRead], units: &[Vec<usize>], max_rows: usize, min_gap: u64) -> (Vec<Vec<usize>>, usize) {
+fn first_fit_units(reads: &[AlignedRead], units: &[Vec<usize>], max_rows: usize, opts: &PackOptions) -> (Vec<Vec<usize>>, usize) {
+    let min_gap = opts.min_gap;
     let mut rows: Vec<Vec<usize>> = Vec::new();
     let mut ends: Vec<u64> = Vec::new();
     let mut hidden = 0;
     let mut placed: Vec<(u64, u64, &Vec<usize>)> = units
         .iter()
-        .map(|u| (u.iter().map(|&i| reads[i].start).min().unwrap_or(0), u.iter().map(|&i| reads[i].end).max().unwrap_or(0), u))
+        .map(|u| (u.iter().map(|&i| opts.span(&reads[i]).0).min().unwrap_or(0), u.iter().map(|&i| opts.span(&reads[i]).1).max().unwrap_or(0), u))
         .collect();
     placed.sort_by_key(|p| (p.0, p.1));
     for (start, end, u) in placed {
@@ -149,7 +164,7 @@ pub fn pack_with(reads: &[AlignedRead], opts: &PackOptions) -> Packed {
 
 /// [`pack_with`] for a subset of the reads (indices into `reads`), e.g. those passing filters.
 pub fn pack_indices(reads: &[AlignedRead], mut order: Vec<usize>, opts: &PackOptions) -> Packed {
-    order.sort_by_key(|&i| (reads[i].start, reads[i].end));
+    order.sort_by_key(|&i| opts.span(&reads[i]));
 
     let phasing = (opts.group == GroupBy::Alleles).then(|| crate::phase::phase(reads, &order));
     let key_of = |i: usize| match &phasing {
@@ -196,8 +211,8 @@ pub fn pack_indices(reads: &[AlignedRead], mut order: Vec<usize>, opts: &PackOpt
         }
         let budget = opts.max_rows.saturating_sub(packed.rows.len());
         let (mut rows, hidden) = match &linked {
-            Some(_) => first_fit_units(reads, &unit_groups[gi].1, budget, opts.min_gap),
-            None => first_fit(reads, &members, budget, opts.min_gap),
+            Some(_) => first_fit_units(reads, &unit_groups[gi].1, budget, opts),
+            None => first_fit(reads, &members, budget, opts),
         };
         if let Some((pos, by)) = opts.sort {
             sort_rows(reads, &mut rows, pos, by);
@@ -222,19 +237,19 @@ pub fn pack_indices(reads: &[AlignedRead], mut order: Vec<usize>, opts: &PackOpt
     packed
 }
 
-fn first_fit(reads: &[AlignedRead], members: &[usize], max_rows: usize, min_gap: u64) -> (Vec<Vec<usize>>, usize) {
+fn first_fit(reads: &[AlignedRead], members: &[usize], max_rows: usize, opts: &PackOptions) -> (Vec<Vec<usize>>, usize) {
     let mut rows: Vec<Vec<usize>> = Vec::new();
     let mut ends: Vec<u64> = Vec::new();
     let mut hidden = 0;
     for &i in members {
-        let r = &reads[i];
-        match ends.iter().position(|&end| end + min_gap <= r.start) {
+        let (start, end) = opts.span(&reads[i]);
+        match ends.iter().position(|&e| e + opts.min_gap <= start) {
             Some(row) => {
-                ends[row] = r.end;
+                ends[row] = end;
                 rows[row].push(i);
             }
             None if rows.len() < max_rows => {
-                ends.push(r.end);
+                ends.push(end);
                 rows.push(vec![i]);
             }
             None => hidden += 1,
@@ -424,6 +439,23 @@ mod tests {
     }
 
     #[test]
+    fn shown_soft_clips_take_up_room_in_the_row() {
+        // 0-100 clipped 50 on the right, 120-200 clipped 30 on the left: the aligned spans
+        // fit one row, the drawn ones (0-150, 90-200) don't.
+        let mut reads = vec![read(0, 100), read(120, 200)];
+        reads[0].soft_clip_right = 50;
+        reads[1].soft_clip_left = 30;
+        assert_eq!(pack_with(&reads, &opts(GroupBy::None, None)).rows, vec![vec![0, 1]]);
+        let clips = PackOptions { soft_clips: true, ..opts(GroupBy::None, None) };
+        assert_eq!(pack_with(&reads, &clips).rows, vec![vec![0], vec![1]]);
+        let linked = PackOptions { link: true, ..clips };
+        assert_eq!(pack_with(&reads, &linked).rows, vec![vec![0], vec![1]]);
+        // Kept in place from a packing without clips, they still move apart.
+        let hints = row_hints(&reads, &pack_with(&reads, &opts(GroupBy::None, None)));
+        assert_eq!(pack_sticky(&reads, vec![0, 1], &clips, &hints).rows, vec![vec![0], vec![1]]);
+    }
+
+    #[test]
     fn caps_rows() {
         let reads: Vec<_> = (0..5).map(|_| read(0, 10)).collect();
         let p = pack(&reads, 3, 2);
@@ -432,7 +464,7 @@ mod tests {
     }
 
     fn opts(group: GroupBy, sort: Option<(u64, SortBy)>) -> PackOptions {
-        PackOptions { max_rows: 100, min_gap: 2, group, sort, link: false }
+        PackOptions { max_rows: 100, min_gap: 2, group, sort, link: false, soft_clips: false }
     }
 
     #[test]
@@ -503,7 +535,7 @@ mod tests {
 /// the same row budget.
 pub fn repack(view: &mut crate::ViewData, max_rows: usize, group: GroupBy, sort: Option<(u64, SortBy)>, link: bool) {
     if let Some((reads, packed)) = &mut view.reads {
-        *packed = pack_with(reads, &PackOptions { max_rows, min_gap: 2, group, sort, link });
+        *packed = pack_with(reads, &PackOptions { max_rows, min_gap: 2, group, sort, link, soft_clips: false });
     }
 }
 
@@ -544,7 +576,7 @@ pub fn pack_sticky(reads: &[AlignedRead], mut order: Vec<usize>, opts: &PackOpti
     if hints.is_empty() || opts.group != GroupBy::None || opts.sort.is_some() || opts.link {
         return pack_indices(reads, order, opts);
     }
-    order.sort_by_key(|&i| (reads[i].start, reads[i].end));
+    order.sort_by_key(|&i| opts.span(&reads[i]));
     // Per row: occupied (start, end) in start order, and the reads there.
     let mut occupied: Vec<Vec<(u64, u64)>> = Vec::new();
     let mut rows: Vec<Vec<usize>> = Vec::new();
@@ -558,15 +590,16 @@ pub fn pack_sticky(reads: &[AlignedRead], mut order: Vec<usize>, opts: &PackOpti
     let mut rest = Vec::new();
     for &i in &order {
         let r = &reads[i];
+        let (start, end) = opts.span(r);
         match hints.0.get(&read_key(r)).copied().filter(|&row| row < opts.max_rows) {
             Some(row) => {
                 if occupied.len() <= row {
                     occupied.resize_with(row + 1, Vec::new);
                     rows.resize_with(row + 1, Vec::new);
                 }
-                let (ok, p) = fits(&occupied[row], r.start, r.end);
+                let (ok, p) = fits(&occupied[row], start, end);
                 if ok {
-                    occupied[row].insert(p, (r.start, r.end));
+                    occupied[row].insert(p, (start, end));
                     rows[row].push(i);
                 } else {
                     rest.push(i);
@@ -577,18 +610,18 @@ pub fn pack_sticky(reads: &[AlignedRead], mut order: Vec<usize>, opts: &PackOpti
     }
     let mut hidden = 0;
     for i in rest {
-        let r = &reads[i];
+        let (start, end) = opts.span(&reads[i]);
         let free = (0..occupied.len()).find_map(|row| {
-            let (ok, p) = fits(&occupied[row], r.start, r.end);
+            let (ok, p) = fits(&occupied[row], start, end);
             ok.then_some((row, p))
         });
         match free {
             Some((row, p)) => {
-                occupied[row].insert(p, (r.start, r.end));
+                occupied[row].insert(p, (start, end));
                 rows[row].push(i);
             }
             None if occupied.len() < opts.max_rows => {
-                occupied.push(vec![(r.start, r.end)]);
+                occupied.push(vec![(start, end)]);
                 rows.push(vec![i]);
             }
             None => hidden += 1,

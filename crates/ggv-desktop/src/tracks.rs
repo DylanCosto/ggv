@@ -194,7 +194,7 @@ impl Style {
     }
 
     pub fn pack_options(&self) -> PackOptions {
-        PackOptions { max_rows: 10_000, min_gap: 2, group: self.group, sort: self.sort, link: self.link_splits }
+        PackOptions { max_rows: 10_000, min_gap: 2, group: self.group, sort: self.sort, link: self.link_splits, soft_clips: self.soft_clips }
     }
 }
 
