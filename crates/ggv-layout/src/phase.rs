@@ -295,7 +295,7 @@ mod tests {
             reads.push(read(1000, 1200, &[(1100, b'G')]));
             reads.push(read(1000, 1200, &[]));
         }
-        let opts = PackOptions { max_rows: 100, min_gap: 0, group: GroupBy::Alleles, sort: None, link: false };
+        let opts = PackOptions { max_rows: 100, min_gap: 0, group: GroupBy::Alleles, sort: None, link: false, soft_clips: false };
         let labels = |reads: &[AlignedRead]| pack_with(reads, &opts).groups.iter().map(|g| g.label.clone()).collect::<Vec<_>>();
         assert_eq!(labels(&reads), [
             "allele phase A · 2 het sites · 2 blocks, A and B set per block",

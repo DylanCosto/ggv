@@ -117,7 +117,7 @@ fn any_tag_groups_like_its_dedicated_grouping() {
     let opts = ViewOptions { tag: Some(*b"HP"), ..Default::default() };
     let view = load_view(&mut bam, &region, None, String::new(), &opts).unwrap();
     let (reads, _) = view.reads.as_ref().unwrap();
-    let pack = |group| ggv_layout::pack_with(reads, &ggv_layout::PackOptions { max_rows: 1000, min_gap: 2, group, sort: None, link: false });
+    let pack = |group| ggv_layout::pack_with(reads, &ggv_layout::PackOptions { max_rows: 1000, min_gap: 2, group, sort: None, link: false, soft_clips: false });
     let (by_tag, by_hp) = (pack(ggv_layout::GroupBy::Tag(*b"HP")), pack(ggv_layout::GroupBy::Haplotype));
     let counts = |p: &ggv_layout::Packed| p.groups.iter().map(|g| g.reads).collect::<Vec<_>>();
     assert_eq!(counts(&by_tag), counts(&by_hp));
@@ -142,7 +142,7 @@ fn rows_changed_after_pan(sticky: bool) -> (usize, usize) {
     };
     let (a, b) = (load(&mut bam, 58_811_000), load(&mut bam, 58_823_000));
     let (ra, rb) = (&a.reads.as_ref().unwrap().0, &b.reads.as_ref().unwrap().0);
-    let po = ggv_layout::PackOptions { max_rows: 10_000, min_gap: 2, group: ggv_layout::GroupBy::None, sort: None, link: false };
+    let po = ggv_layout::PackOptions { max_rows: 10_000, min_gap: 2, group: ggv_layout::GroupBy::None, sort: None, link: false, soft_clips: false };
     let pa = ggv_layout::pack_with(ra, &po);
     let pb = if sticky {
         ggv_layout::pack_sticky(rb, (0..rb.len()).collect(), &po, &ggv_layout::row_hints(ra, &pa))
@@ -174,4 +174,26 @@ fn panning_keeps_reads_in_their_rows() {
     let (moved, both) = rows_changed_after_pan(true);
     eprintln!("sticky packing: {moved} of {both} changed rows");
     assert_eq!(moved, 0, "reads on screen must keep their rows");
+}
+
+/// Issue #4 (public repo): with soft clips shown, HiFi reads' clipped tails (10-29 kb here) ran
+/// over the next read in the row. Packed with clips, no two drawn spans in a row meet.
+#[test]
+fn shown_soft_clips_do_not_overlap_in_a_row() {
+    let (rs, _, _) = reads("chr20:31139012-31159012");
+    let drawn = |r: &AlignedRead| (r.start.saturating_sub(u64::from(r.soft_clip_left)), r.end + u64::from(r.soft_clip_right));
+    let overlaps = |p: &ggv_layout::Packed| {
+        p.rows.iter().map(|row| row.iter().enumerate().flat_map(|(k, &i)| row[k + 1..].iter().map(move |&j| (i, j)))
+            .filter(|&(i, j)| { let ((a0, a1), (b0, b1)) = (drawn(&rs[i]), drawn(&rs[j])); a0 < b1 && b0 < a1 }).count()).sum::<usize>()
+    };
+    for group in [ggv_layout::GroupBy::None, ggv_layout::GroupBy::Haplotype] {
+        let po = ggv_layout::PackOptions { max_rows: 10_000, min_gap: 2, group, sort: None, link: false, soft_clips: false };
+        assert!(overlaps(&ggv_layout::pack_with(&rs, &po)) > 0, "{group:?}: the fixture should show the overlap without clips");
+        for link in [false, true] {
+            let po = ggv_layout::PackOptions { soft_clips: true, link, ..po };
+            let p = ggv_layout::pack_with(&rs, &po);
+            assert_eq!(overlaps(&p), 0, "{group:?}, link {link}");
+            assert_eq!(p.rows.iter().map(Vec::len).sum::<usize>(), rs.len());
+        }
+    }
 }
